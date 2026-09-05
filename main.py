@@ -1,15 +1,14 @@
 import yfinance as yf
 import requests
 import pandas as pd
-import pandas_ta as ta
 import time
 from datetime import datetime
 import pytz
 from flask import Flask
 from threading import Thread
+import os
 
 # --- INIZIALIZZAZIONE SERVER WEB PER RENDER ---
-# Render richiede che l'applicazione risponda a una porta web per rimanere attiva.
 app = Flask('')
 
 @app.route('/')
@@ -17,8 +16,6 @@ def home():
     return "Bot di Trading Attivo e in Esecuzione!"
 
 def run_web_server():
-    # Render assegna automaticamente una porta tramite la variabile d'ambiente PORT
-    import os
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -39,59 +36,79 @@ TICKERS = [
     'A2A.MI', 'PST.MI', 'TRN.MI', 'PRY.MI', 'MONC.MI', 'STM.MI', 'LDO.MI', 'CPR.MI'
 ]
 
-# --- PARAMETRI STRATEGIA ---
+# Parametri strategia
 TIMEFRAMES = ['5m', '15m', '30m', '1h']
-STOCH_LENGTH = 14
-RSI_LENGTH = 14
-K_SMOOTH = 3
-D_SMOOTH = 3
-
 BUY_LOW, BUY_HIGH = 0, 2
 SELL_LOW, SELL_HIGH = 98, 100
 
 def is_market_time():
     now = datetime.now(LOCAL_TZ)
-    if now.weekday() > 4:  # Sabato e Domenica fermo
+    if now.weekday() > 4:
         return False
     if START_HOUR <= now.hour < END_HOUR:
         return True
     return False
 
 def send_telegram_message(message):
-    """Invia le notifiche direttamente senza proxy (su Render la rete è libera)."""
     url = f"https://telegram.org{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         response = requests.post(url, json=payload, timeout=15)
-        if response.status_code != 200:
-            print(f"[ERRORE TELEGRAM] Risposta del server: {response.text}")
-        else:
+        if response.status_code == 200:
             print("[OK] Notifica inviata con successo su Telegram!")
     except Exception as e:
-        print(f"[ERRORE RETE TELEGRAM] Impossibile connettersi: {e}")
+        print(f"[ERRORE RETE TELEGRAM] {e}")
+
+def calculate_vwap(df):
+    """Calcola il VWAP manualmente senza librerie esterne."""
+    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+    tp_v = typical_price * df['Volume']
+    
+    # Raggruppa per giorno per resettare il VWAP su base intraday
+    df['Date_Group'] = df.index.date
+    cum_tp_v = df.groupby('Date_Group', group_keys=False).apply(lambda x: tp_v.loc[x.index].cumsum())
+    cum_v = df.groupby('Date_Group', group_keys=False).apply(lambda x: x['Volume'].cumsum())
+    
+    # Se la struttura a gruppi fallisce, esegui un calcolo cumulativo semplice
+    if isinstance(cum_tp_v, pd.Series):
+        df['VWAP'] = cum_tp_v / cum_v
+    else:
+        df['VWAP'] = tp_v.cumsum() / df['Volume'].cumsum()
+    return df
+
+def calculate_stoch_rsi(df, period=14, k_smooth=3, d_smooth=3):
+    """Calcola lo Stochastic RSI manualmente in Python puro."""
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    
+    rs = gain / (loss + 1e-10)
+    rsi = 100 - (100 / (1 + rs + 1e-10))
+    
+    rsi_min = rsi.rolling(window=period).min()
+    rsi_max = rsi.rolling(window=period).max()
+    
+    stoch_rsi = (rsi - rsi_min) / (rsi_max - rsi_min + 1e-10) * 100
+    df['StochRSI_K'] = stoch_rsi.rolling(window=k_smooth).mean()
+    df['StochRSI_D'] = df['StochRSI_K'].rolling(window=d_smooth).mean()
+    return df
 
 def check_timeframe_signal(ticker_symbol, tf):
     try:
         ticker = yf.Ticker(ticker_symbol)
         period = "2d" if tf in ['5m', '15m'] else "7d"
-        # Rimosso il vecchio proxy di PythonAnywhere che causava l'errore
         df = ticker.history(period=period, interval=tf)
         
         if df.empty or len(df) < 30:
             return None
 
-        df.ta.vwap(append=True)
-        stoch_rsi = df.ta.stochrsi(length=STOCH_LENGTH, rsi_length=RSI_LENGTH, k=K_SMOOTH, d=D_SMOOTH)
-        df = pd.concat([df, stoch_rsi], axis=1)
-
-        k_col = [col for col in df.columns if 'STOCHRSIk' in col]
-        d_col = [col for col in df.columns if 'STOCHRSId' in col]
-        vwap_col = [col for col in df.columns if 'VWAP' in col]
+        df = calculate_vwap(df)
+        df = calculate_stoch_rsi(df)
 
         p_close = df.iloc[-2]['Close']
-        p_vwap = df.iloc[-2][vwap_col]
-        k_curr = df.iloc[-2][k_col]
-        d_curr = df.iloc[-2][d_col]
+        p_vwap = df.iloc[-2]['VWAP']
+        k_curr = df.iloc[-2]['StochRSI_K']
+        d_curr = df.iloc[-2]['StochRSI_D']
 
         if (BUY_LOW <= k_curr <= BUY_HIGH) and (BUY_LOW <= d_curr <= BUY_HIGH) and p_close > p_vwap:
             return "BUY"
@@ -116,19 +133,15 @@ def scan_all_markets():
             send_telegram_message(f"🔥 🔴 **SELL CONVERGENTE** 🔴 🔥\n\n**Titolo:** `{ticker}`\nStoch RSI in ipercomprato estremo su 5m, 15m, 30m, 1h.\nPrezzo sotto VWAP.")
 
 def bot_loop():
-    """Ciclo infinito di scansione ogni 5 minuti."""
     print("Inizializzazione bot...")
-    send_telegram_message("🚀 **Bot di Trading attivato con successo su Render!** Monitoraggio h24 attivo.")
+    send_telegram_message("🚀 **Bot di Trading attivato con successo su Render!** Monitoraggio h24 attivo senza librerie esterne.")
     print("Bot in esecuzione...")
     while True:
         scan_all_markets()
         time.sleep(300)
 
-# --- AVVIO MULTI-THREAD ---
 if __name__ == "__main__":
-    # 1. Avvia il server web in background per soddisfare i requisiti di Render
     t_web = Thread(target=run_web_server)
     t_web.start()
-    
-    # 2. Avvia il ciclo principale del bot di trading nello stesso momento
     bot_loop()
+
