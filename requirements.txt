@@ -1,7 +1,7 @@
 yfinance
 pandas
-pandas-ta-classic
 pytz
 flask
 requests
+
 
