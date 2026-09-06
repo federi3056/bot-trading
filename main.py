@@ -20,7 +20,7 @@ def run_web_server():
     app.run(host='0.0.0.0', port=port)
 
 # --- CONFIGURAZIONE TELEGRAM ---
-TELEGRAM_TOKEN = "8820172406:AAE1Cewxm3qcOYmtKurMw517ABH6-uqyic"
+TELEGRAM_TOKEN = "8820172406:AAE1Cewxm3qCOYmtKurMw517ABH6-uqyic"
 TELEGRAM_CHAT_ID = "1027014963"
 
 # --- CONFIGURAZIONE ORARIA (Fuso Orario Italiano) ---
@@ -50,7 +50,7 @@ def is_market_time():
     return False
 
 def send_telegram_message(message):
-    url = f"https://telegram.org{TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         response = requests.post(url, json=payload, timeout=15)
