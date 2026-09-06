@@ -20,7 +20,7 @@ def run_web_server():
     app.run(host='0.0.0.0', port=port)
 
 # --- CONFIGURAZIONE TELEGRAM ---
-TELEGRAM_TOKEN = "8820172406:AAE1Cewxm3qCOYmtKurMw517ABH6-uqyic"
+TELEGRAM_TOKEN = "8820172406:AAE1Cewxm3qCOYmtKurcMw517AbH6-uqyic"
 TELEGRAM_CHAT_ID = "1027014963"
 
 # --- CONFIGURAZIONE ORARIA (Fuso Orario Italiano) ---
