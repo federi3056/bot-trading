@@ -191,11 +191,18 @@ def bot_loop():
     print("Inizializzazione bot...")
     send_telegram_message("🚀 **Bot Intraday V4 Definitivo Online!** Rimosse tutte le librerie instabili. Connessione HTTP nativa funzionante.")
     print("Bot in esecuzione...")
+    
+    # --- TEST DI AVVIO FORZATO ---
+    print("\n[TEST AVVIO] Eseguo una scansione di prova immediata per verificare i log...")
+    print(f"--- 📈 Scansione Intraday Nativa (15m+30m) Avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---")
+    # Forziamo la prima lettura sui primi 3 titoli italiani per vedere se rispondono
+    for ticker in ['ISP.MI', 'UCG.MI', 'ENI.MI']:
+        print(f"[TEST] Controllo accoppiata 15m/30m per {ticker}...")
+        sig_15m = check_timeframe_signal(ticker, '15m')
+        print(f"[TEST] Risultato {ticker}: {sig_15m}")
+    print("[TEST AVVIO] Test completato con successo. Ora entro nel ciclo standard.\n")
+    # ------------------------------
+
     while True:
         scan_all_markets()
         time.sleep(300)
-
-if __name__ == "__main__":
-    t_web = Thread(target=run_web_server)
-    t_web.start()
-    bot_loop()
