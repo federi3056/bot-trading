@@ -13,7 +13,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot di Trading Attivo e in Esecuzione!"
+    return "Bot di Trading Intraday Alta Precisione Attivo!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -36,14 +36,14 @@ TICKERS = [
     'A2A.MI', 'PST.MI', 'TRN.MI', 'PRY.MI', 'MONC.MI', 'STM.MI', 'LDO.MI', 'CPR.MI'
 ]
 
-# Parametri strategia
-TIMEFRAMES = ['5m', '15m', '30m', '1h']
-BUY_LOW, BUY_HIGH = 0, 2
-SELL_LOW, SELL_HIGH = 98, 100
+# --- PARAMETRI STRATEGIA INTRADAY DIREZIONALE ---
+TIMEFRAMES = ['15m', '30m']
+BUY_LOW, BUY_HIGH = 0, 15
+SELL_LOW, SELL_HIGH = 85, 100
 
 def is_market_time():
     now = datetime.now(LOCAL_TZ)
-    if now.weekday() > 4:
+    if now.weekday() > 4:  # Sabato e Domenica mercati chiusi
         return False
     if START_HOUR <= now.hour < END_HOUR:
         return True
@@ -60,16 +60,14 @@ def send_telegram_message(message):
         print(f"[ERRORE RETE TELEGRAM] {e}")
 
 def calculate_vwap(df):
-    """Calcola il VWAP manualmente senza librerie esterne."""
+    """Calcola il VWAP su base intraday resettandolo ogni giorno."""
     typical_price = (df['High'] + df['Low'] + df['Close']) / 3
     tp_v = typical_price * df['Volume']
     
-    # Raggruppa per giorno per resettare il VWAP su base intraday
     df['Date_Group'] = df.index.date
     cum_tp_v = df.groupby('Date_Group', group_keys=False).apply(lambda x: tp_v.loc[x.index].cumsum())
     cum_v = df.groupby('Date_Group', group_keys=False).apply(lambda x: x['Volume'].cumsum())
     
-    # Se la struttura a gruppi fallisce, esegui un calcolo cumulativo semplice
     if isinstance(cum_tp_v, pd.Series):
         df['VWAP'] = cum_tp_v / cum_v
     else:
@@ -93,28 +91,42 @@ def calculate_stoch_rsi(df, period=14, k_smooth=3, d_smooth=3):
     df['StochRSI_D'] = df['StochRSI_K'].rolling(window=d_smooth).mean()
     return df
 
+def calculate_ema(df, period=200):
+    """Calcola la Media Mobile Esponenziale a 200 periodi."""
+    return df['Close'].ewm(span=period, adjust=False).mean()
+
 def check_timeframe_signal(ticker_symbol, tf):
     try:
         ticker = yf.Ticker(ticker_symbol)
-        period = "2d" if tf in ['5m', '15m'] else "7d"
+        # Ottimizzazione del carico dati per evitare blocchi (Rate Limiting)
+        period = "5d" if tf == '15m' else "10d"
         df = ticker.history(period=period, interval=tf)
         
-        if df.empty or len(df) < 30:
+        # L'EMA 200 ha bisogno di almeno 200 candele per essere accurata
+        if df.empty or len(df) < 200:
             return None
 
         df = calculate_vwap(df)
         df = calculate_stoch_rsi(df)
+        df['EMA_200'] = calculate_ema(df, 200)
 
+        # Analizziamo la penultima candela chiusa per evitare falsi segnali su candele in corso
         p_close = df.iloc[-2]['Close']
         p_vwap = df.iloc[-2]['VWAP']
+        p_ema = df.iloc[-2]['EMA_200']
         k_curr = df.iloc[-2]['StochRSI_K']
         d_curr = df.iloc[-2]['StochRSI_D']
 
-        if (BUY_LOW <= k_curr <= BUY_HIGH) and (BUY_LOW <= d_curr <= BUY_HIGH) and p_close > p_vwap:
+        # 🟢 CONDIZIONE BUY: StochRSI in Ipervenduto + Prezzo sopra VWAP + Prezzo sopra EMA 200
+        if (BUY_LOW <= k_curr <= BUY_HIGH) and (BUY_LOW <= d_curr <= BUY_HIGH) and (p_close > p_vwap) and (p_close > p_ema):
             return "BUY"
-        elif (SELL_LOW <= k_curr <= SELL_HIGH) and (SELL_LOW <= d_curr <= SELL_HIGH) and p_close < p_vwap:
+            
+        # 🔴 CONDIZIONE SELL: StochRSI in Ipercomprato + Prezzo sotto VWAP + Prezzo sotto EMA 200
+        elif (SELL_LOW <= k_curr <= SELL_HIGH) and (SELL_LOW <= d_curr <= SELL_HIGH) and (p_close < p_vwap) and (p_close < p_ema):
             return "SELL"
-    except:
+            
+    except Exception as e:
+        print(f"[ERRORE LOGICA] {ticker_symbol} su {tf}: {e}")
         return None
     return None
 
@@ -123,25 +135,43 @@ def scan_all_markets():
         print(f"[{datetime.now(LOCAL_TZ).strftime('%H:%M:%S')}] Mercati chiusi o fuori orario. Standby...")
         return
 
-    print(f"\n--- Scansione avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---")
+    print(f"\n--- 📈 Scansione Intraday Alta Precisione (15m+30m) Avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---")
     for ticker in TICKERS:
-        signals = {tf: check_timeframe_signal(ticker, tf) for tf in TIMEFRAMES}
+        sig_15m = check_timeframe_signal(ticker, '15m')
+        sig_30m = check_timeframe_signal(ticker, '30m')
         
-        if all(sig == "BUY" for sig in signals.values()):
-            send_telegram_message(f"🔥 🟢 **BUY CONVERGENTE** 🟢 🔥\n\n**Titolo:** `{ticker}`\nStoch RSI in ipervenduto estremo su 5m, 15m, 30m, 1h.\nPrezzo sopra VWAP.")
-        elif all(sig == "SELL" for sig in signals.values()):
-            send_telegram_message(f"🔥 🔴 **SELL CONVERGENTE** 🔴 🔥\n\n**Titolo:** `{ticker}`\nStoch RSI in ipercomprato estremo su 5m, 15m, 30m, 1h.\nPrezzo sotto VWAP.")
+        # Il segnale viene inviato ESCLUSIVAMENTE se entrambi i timeframe confermano la direzione
+        if sig_15m == "BUY" and sig_30m == "BUY":
+            send_telegram_message(
+                f"🎯 🟢 **SEGNALE BUY INTRADAY CELESTE** 🟢 🎯\n\n"
+                f"**Titolo:** `{ticker}`\n"
+                f"**Analisi:** Confluenza direzionale su **15m** e **30m**.\n"
+                f"1. Stoch RSI uscito da ipervenduto ({BUY_LOW}-{BUY_HIGH})\n"
+                f"2. Prezzo superiore al VWAP intraday\n"
+                f"3. Tendenza rialzista protetta da EMA 200"
+            )
+        elif sig_15m == "SELL" and sig_30m == "SELL":
+            send_telegram_message(
+                f"🎯 🔴 **SEGNALE SELL INTRADAY CELESTE** 🔴 🎯\n\n"
+                f"**Titolo:** `{ticker}`\n"
+                f"**Analisi:** Confluenza short su **15m** e **30m**.\n"
+                f"1. Stoch RSI uscito da ipercomprato ({SELL_LOW}-{SELL_HIGH})\n"
+                f"2. Prezzo inferiore al VWAP intraday\n"
+                f"3. Tendenza ribassista confermata sotto EMA 200"
+            )
 
 def bot_loop():
     print("Inizializzazione bot...")
-    send_telegram_message("🚀 **Bot di Trading attivato con successo su Render!** Monitoraggio h24 attivo senza librerie esterne.")
+    send_telegram_message("🚀 **Bot Intraday Alta Precisione avviato su Render!** Strategia 15m/30m con filtri VWAP + EMA 200 attiva.")
     print("Bot in esecuzione...")
     while True:
         scan_all_markets()
+        # Timer impostato a 5 minuti per evitare blocchi IP e garantire stabilità
         time.sleep(300)
 
 if __name__ == "__main__":
     t_web = Thread(target=run_web_server)
     t_web.start()
     bot_loop()
+
 
