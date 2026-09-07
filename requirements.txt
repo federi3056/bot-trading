@@ -2,7 +2,7 @@ pandas
 requests
 pytz
 Flask
-git+https://github.com
+tvdatafeed
 
 
 
