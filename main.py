@@ -29,7 +29,6 @@ START_HOUR = 9
 END_HOUR = 23
 
 # --- PANIERE DI 30 AZIONI ADATTATO PER TRADINGVIEW ---
-# Formato: (Nome_Visualizzazione, Simbolo_TradingView, Scambio)
 TICKERS_CONFIG = [
     ('AAPL', 'AAPL', 'NASDAQ'), ('MSFT', 'MSFT', 'NASDAQ'), ('NVDA', 'NVDA', 'NASDAQ'),
     ('AMZN', 'AMZN', 'NASDAQ'), ('META', 'META', 'NASDAQ'), ('TSLA', 'TSLA', 'NASDAQ'),
@@ -62,7 +61,7 @@ def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        response = requests.post(url, json=payload, timeout=15)
+        requests.post(url, json=payload, timeout=15)
     except:
         pass
 
@@ -105,7 +104,8 @@ def check_timeframe_signal(symbol, exchange, tf_tv):
         # Scarichiamo 250 candele stabili direttamente da TradingView
         df = tv.get_hist(symbol=symbol, exchange=exchange, interval=tf_tv, n_bars=250)
         
-        if df is优化 or df.empty or len(df) < 200:
+        # CORRETTO: rimosso il refuso di testo in italiano
+        if df is None or df.empty or len(df) < 200:
             return None
 
         df = calculate_vwap(df)
@@ -158,7 +158,7 @@ def scan_all_markets():
 
 def bot_loop():
     print("Inizializzazione bot...")
-    send_telegram_message("🚀 **Bot Intraday V3 Online!** Rimosso Yahoo Finance. Motore dati commutato su **TradingView** con successo.")
+    send_telegram_message("🚀 **Bot Intraday V3 Online!** Motore dati TradingView attivo e pronto per domani mattina.")
     print("Bot in esecuzione...")
     while True:
         scan_all_markets()
