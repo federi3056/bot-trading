@@ -2,7 +2,5 @@ pandas
 requests
 pytz
 Flask
-tvdatafeed
-
 
 
