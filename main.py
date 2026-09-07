@@ -1,4 +1,5 @@
 import yfinance as yf
+import yfinance_cache as yfc  # Nuova libreria di override anti-blocco
 import requests
 import pandas as pd
 import time
@@ -43,7 +44,7 @@ SELL_LOW, SELL_HIGH = 85, 100
 
 def is_market_time():
     now = datetime.now(LOCAL_TZ)
-    if now.weekday() > 4:  # Sabato e Domenica mercati chiusi
+    if now.weekday() > 4:  # Sabato e Domenica chiusi
         return False
     if START_HOUR <= now.hour < END_HOUR:
         return True
@@ -97,12 +98,11 @@ def calculate_ema(df, period=200):
 
 def check_timeframe_signal(ticker_symbol, tf):
     try:
-        ticker = yf.Ticker(ticker_symbol)
-        # Ottimizzazione del carico dati per evitare blocchi (Rate Limiting)
+        # Usiamo yfinance_cache per richiedere il Ticker aggirando il blocco Crumb
+        ticker = yfc.Ticker(ticker_symbol)
         period = "5d" if tf == '15m' else "10d"
         df = ticker.history(period=period, interval=tf)
         
-        # L'EMA 200 ha bisogno di almeno 200 candele per essere accurata
         if df.empty or len(df) < 200:
             return None
 
@@ -110,23 +110,22 @@ def check_timeframe_signal(ticker_symbol, tf):
         df = calculate_stoch_rsi(df)
         df['EMA_200'] = calculate_ema(df, 200)
 
-        # Analizziamo la penultima candela chiusa per evitare falsi segnali su candele in corso
         p_close = df.iloc[-2]['Close']
         p_vwap = df.iloc[-2]['VWAP']
         p_ema = df.iloc[-2]['EMA_200']
         k_curr = df.iloc[-2]['StochRSI_K']
         d_curr = df.iloc[-2]['StochRSI_D']
 
-        # 🟢 CONDIZIONE BUY: StochRSI in Ipervenduto + Prezzo sopra VWAP + Prezzo sopra EMA 200
+        # 🟢 CONDIZIONE BUY
         if (BUY_LOW <= k_curr <= BUY_HIGH) and (BUY_LOW <= d_curr <= BUY_HIGH) and (p_close > p_vwap) and (p_close > p_ema):
             return "BUY"
             
-        # 🔴 CONDIZIONE SELL: StochRSI in Ipercomprato + Prezzo sotto VWAP + Prezzo sotto EMA 200
+        # 🔴 CONDIZIONE SELL
         elif (SELL_LOW <= k_curr <= SELL_HIGH) and (SELL_LOW <= d_curr <= SELL_HIGH) and (p_close < p_vwap) and (p_close < p_ema):
             return "SELL"
             
     except Exception as e:
-        print(f"[ERRORE LOGICA] {ticker_symbol} su {tf}: {e}")
+        print(f"[ERRORE DATA] {ticker_symbol} su {tf}: {e}")
         return None
     return None
 
@@ -140,7 +139,6 @@ def scan_all_markets():
         sig_15m = check_timeframe_signal(ticker, '15m')
         sig_30m = check_timeframe_signal(ticker, '30m')
         
-        # Il segnale viene inviato ESCLUSIVAMENTE se entrambi i timeframe confermano la direzione
         if sig_15m == "BUY" and sig_30m == "BUY":
             send_telegram_message(
                 f"🎯 🟢 **SEGNALE BUY INTRADAY CELESTE** 🟢 🎯\n\n"
@@ -162,16 +160,14 @@ def scan_all_markets():
 
 def bot_loop():
     print("Inizializzazione bot...")
-    send_telegram_message("🚀 **Bot Intraday Alta Precisione avviato su Render!** Strategia 15m/30m con filtri VWAP + EMA 200 attiva.")
+    send_telegram_message("🚀 **Bot Intraday V2 Online!** Corretto il blocco di Yahoo Finance via cache persistente.")
     print("Bot in esecuzione...")
     while True:
         scan_all_markets()
-        # Timer impostato a 5 minuti per evitare blocchi IP e garantire stabilità
         time.sleep(300)
 
 if __name__ == "__main__":
     t_web = Thread(target=run_web_server)
     t_web.start()
     bot_loop()
-
 
