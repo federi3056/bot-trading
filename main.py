@@ -1,6 +1,3 @@
-import yfinance as yf
-import yfinance_cache as yfc  # Nuova libreria di override anti-blocco
-import requests
 import pandas as pd
 import time
 from datetime import datetime
@@ -8,13 +5,15 @@ import pytz
 from flask import Flask
 from threading import Thread
 import os
+import requests
+from tvdatafeed import TvDatafeed, Interval
 
 # --- INIZIALIZZAZIONE SERVER WEB PER RENDER ---
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot di Trading Intraday Alta Precisione Attivo!"
+    return "Bot di Trading Intraday TradingView Attivo!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -29,22 +28,31 @@ LOCAL_TZ = pytz.timezone("Europe/Rome")
 START_HOUR = 9
 END_HOUR = 23
 
-# --- PANIERE DI 30 AZIONI (15 USA + 15 ITALIA) ---
-TICKERS = [
-    'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'TSLA', 'GOOGL', 'BRK-B', 
-    'AMD', 'NFLX', 'JPM', 'V', 'DIS', 'PLTR', 'XOM',
-    'RACE.MI', 'STLAM.MI', 'ISP.MI', 'UCG.MI', 'ENI.MI', 'EGP.MI', 'G.MI', 
-    'A2A.MI', 'PST.MI', 'TRN.MI', 'PRY.MI', 'MONC.MI', 'STM.MI', 'LDO.MI', 'CPR.MI'
+# --- PANIERE DI 30 AZIONI ADATTATO PER TRADINGVIEW ---
+# Formato: (Nome_Visualizzazione, Simbolo_TradingView, Scambio)
+TICKERS_CONFIG = [
+    ('AAPL', 'AAPL', 'NASDAQ'), ('MSFT', 'MSFT', 'NASDAQ'), ('NVDA', 'NVDA', 'NASDAQ'),
+    ('AMZN', 'AMZN', 'NASDAQ'), ('META', 'META', 'NASDAQ'), ('TSLA', 'TSLA', 'NASDAQ'),
+    ('GOOGL', 'GOOGL', 'NASDAQ'), ('BRK-B', 'BRK.B', 'NYSE'), ('AMD', 'AMD', 'NASDAQ'),
+    ('NFLX', 'NFLX', 'NASDAQ'), ('JPM', 'JPM', 'NYSE'), ('V', 'V', 'NYSE'),
+    ('DIS', 'DIS', 'NYSE'), ('PLTR', 'PLTR', 'NYSE'), ('XOM', 'XOM', 'NYSE'),
+    ('RACE.MI', 'RACE', 'MIL'), ('STLAM.MI', 'STLAM', 'MIL'), ('ISP.MI', 'ISP', 'MIL'),
+    ('UCG.MI', 'UCG', 'MIL'), ('ENI.MI', 'ENI', 'MIL'), ('EGP.MI', 'EGP', 'MIL'),
+    ('G.MI', 'G', 'MIL'), ('A2A.MI', 'A2A', 'MIL'), ('PST.MI', 'PST', 'MIL'),
+    ('TRN.MI', 'TRN', 'MIL'), ('PRY.MI', 'PRY', 'MIL'), ('MONC.MI', 'MONC', 'MIL'),
+    ('STM.MI', 'STMMI', 'MIL'), ('LDO.MI', 'LDO', 'MIL'), ('CPR.MI', 'CPR', 'MIL')
 ]
 
 # --- PARAMETRI STRATEGIA INTRADAY DIREZIONALE ---
-TIMEFRAMES = ['15m', '30m']
 BUY_LOW, BUY_HIGH = 0, 15
 SELL_LOW, SELL_HIGH = 85, 100
 
+# Inizializziamo TradingView Datafeed in modalità anonima
+tv = TvDatafeed()
+
 def is_market_time():
     now = datetime.now(LOCAL_TZ)
-    if now.weekday() > 4:  # Sabato e Domenica chiusi
+    if now.weekday() > 4:
         return False
     if START_HOUR <= now.hour < END_HOUR:
         return True
@@ -55,29 +63,26 @@ def send_telegram_message(message):
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         response = requests.post(url, json=payload, timeout=15)
-        if response.status_code == 200:
-            print("[OK] Notifica inviata con successo su Telegram!")
-    except Exception as e:
-        print(f"[ERRORE RETE TELEGRAM] {e}")
+    except:
+        pass
 
 def calculate_vwap(df):
-    """Calcola il VWAP su base intraday resettandolo ogni giorno."""
-    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
-    tp_v = typical_price * df['Volume']
+    """Calcola il VWAP basandosi sulla sessione intraday (reset giornaliero)."""
+    typical_price = (df['high'] + df['low'] + df['close']) / 3
+    tp_v = typical_price * df['volume']
     
     df['Date_Group'] = df.index.date
     cum_tp_v = df.groupby('Date_Group', group_keys=False).apply(lambda x: tp_v.loc[x.index].cumsum())
-    cum_v = df.groupby('Date_Group', group_keys=False).apply(lambda x: x['Volume'].cumsum())
+    cum_v = df.groupby('Date_Group', group_keys=False).apply(lambda x: x['volume'].cumsum())
     
     if isinstance(cum_tp_v, pd.Series):
         df['VWAP'] = cum_tp_v / cum_v
     else:
-        df['VWAP'] = tp_v.cumsum() / df['Volume'].cumsum()
+        df['VWAP'] = tp_v.cumsum() / df['volume'].cumsum()
     return df
 
 def calculate_stoch_rsi(df, period=14, k_smooth=3, d_smooth=3):
-    """Calcola lo Stochastic RSI manualmente in Python puro."""
-    delta = df['Close'].diff()
+    delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
     
@@ -93,56 +98,49 @@ def calculate_stoch_rsi(df, period=14, k_smooth=3, d_smooth=3):
     return df
 
 def calculate_ema(df, period=200):
-    """Calcola la Media Mobile Esponenziale a 200 periodi."""
-    return df['Close'].ewm(span=period, adjust=False).mean()
+    return df['close'].ewm(span=period, adjust=False).mean()
 
-def check_timeframe_signal(ticker_symbol, tf):
+def check_timeframe_signal(symbol, exchange, tf_tv):
     try:
-        # Usiamo yfinance_cache per richiedere il Ticker aggirando il blocco Crumb
-        ticker = yfc.Ticker(ticker_symbol)
-        period = "5d" if tf == '15m' else "10d"
-        df = ticker.history(period=period, interval=tf)
+        # Scarichiamo 250 candele stabili direttamente da TradingView
+        df = tv.get_hist(symbol=symbol, exchange=exchange, interval=tf_tv, n_bars=250)
         
-        if df.empty or len(df) < 200:
+        if df is优化 or df.empty or len(df) < 200:
             return None
 
         df = calculate_vwap(df)
         df = calculate_stoch_rsi(df)
         df['EMA_200'] = calculate_ema(df, 200)
 
-        p_close = df.iloc[-2]['Close']
+        p_close = df.iloc[-2]['close']
         p_vwap = df.iloc[-2]['VWAP']
         p_ema = df.iloc[-2]['EMA_200']
         k_curr = df.iloc[-2]['StochRSI_K']
         d_curr = df.iloc[-2]['StochRSI_D']
 
-        # 🟢 CONDIZIONE BUY
         if (BUY_LOW <= k_curr <= BUY_HIGH) and (BUY_LOW <= d_curr <= BUY_HIGH) and (p_close > p_vwap) and (p_close > p_ema):
             return "BUY"
-            
-        # 🔴 CONDIZIONE SELL
         elif (SELL_LOW <= k_curr <= SELL_HIGH) and (SELL_LOW <= d_curr <= SELL_HIGH) and (p_close < p_vwap) and (p_close < p_ema):
             return "SELL"
             
-    except Exception as e:
-        print(f"[ERRORE DATA] {ticker_symbol} su {tf}: {e}")
+    except:
         return None
     return None
 
 def scan_all_markets():
     if not is_market_time():
-        print(f"[{datetime.now(LOCAL_TZ).strftime('%H:%M:%S')}] Mercati chiusi o fuori orario. Standby...")
+        print(f"[{datetime.now(LOCAL_TZ).strftime('%H:%M:%S')}] Mercati chiusi. Standby...")
         return
 
-    print(f"\n--- 📈 Scansione Intraday Alta Precisione (15m+30m) Avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---")
-    for ticker in TICKERS:
-        sig_15m = check_timeframe_signal(ticker, '15m')
-        sig_30m = check_timeframe_signal(ticker, '30m')
+    print(f"\n--- 📈 Scansione TradingView (15m+30m) Avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---")
+    for name, symbol, exchange in TICKERS_CONFIG:
+        sig_15m = check_timeframe_signal(symbol, exchange, Interval.in_15_minute)
+        sig_30m = check_timeframe_signal(symbol, exchange, Interval.in_30_minute)
         
         if sig_15m == "BUY" and sig_30m == "BUY":
             send_telegram_message(
-                f"🎯 🟢 **SEGNALE BUY INTRADAY CELESTE** 🟢 🎯\n\n"
-                f"**Titolo:** `{ticker}`\n"
+                f"🎯 🟢 **SEGNALE BUY TRADINGVIEW** 🟢 🎯\n\n"
+                f"**Titolo:** `{name}`\n"
                 f"**Analisi:** Confluenza direzionale su **15m** e **30m**.\n"
                 f"1. Stoch RSI uscito da ipervenduto ({BUY_LOW}-{BUY_HIGH})\n"
                 f"2. Prezzo superiore al VWAP intraday\n"
@@ -150,8 +148,8 @@ def scan_all_markets():
             )
         elif sig_15m == "SELL" and sig_30m == "SELL":
             send_telegram_message(
-                f"🎯 🔴 **SEGNALE SELL INTRADAY CELESTE** 🔴 🎯\n\n"
-                f"**Titolo:** `{ticker}`\n"
+                f"🎯 🔴 **SEGNALE SELL TRADINGVIEW** 🔴 🎯\n\n"
+                f"**Titolo:** `{name}`\n"
                 f"**Analisi:** Confluenza short su **15m** e **30m**.\n"
                 f"1. Stoch RSI uscito da ipercomprato ({SELL_LOW}-{SELL_HIGH})\n"
                 f"2. Prezzo inferiore al VWAP intraday\n"
@@ -160,7 +158,7 @@ def scan_all_markets():
 
 def bot_loop():
     print("Inizializzazione bot...")
-    send_telegram_message("🚀 **Bot Intraday V2 Online!** Corretto il blocco di Yahoo Finance via cache persistente.")
+    send_telegram_message("🚀 **Bot Intraday V3 Online!** Rimosso Yahoo Finance. Motore dati commutato su **TradingView** con successo.")
     print("Bot in esecuzione...")
     while True:
         scan_all_markets()
@@ -170,4 +168,3 @@ if __name__ == "__main__":
     t_web = Thread(target=run_web_server)
     t_web.start()
     bot_loop()
-
