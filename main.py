@@ -92,8 +92,7 @@ def calculate_ema(df, period=200):
     return df['Close'].ewm(span=period, adjust=False).mean()
 
 def get_clean_data(ticker, interval):
-    """Interroga direttamente i server Chart di Yahoo aggirando i blocchi libreria."""
-    # Convertiamo l'intervallo nel formato compreso dall'API chart
+    """Interroga direttamente i server Chart di Yahoo aggirando i blocchi."""
     tf_query = "15m" if interval == "15m" else "30m"
     range_query = "5d" if interval == "15m" else "10d"
     
@@ -102,36 +101,38 @@ def get_clean_data(ticker, interval):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
-    response = requests.get(url, headers=headers, timeout=15)
-    if response.status_code != 200:
-        return None
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            return None
+            
+        data = response.json()
+        body = data.get('chart', {}).get('result', [])
+        if not body:
+            return None
+            
+        timestamps = body[0].get('timestamp', [])
+        indicators = body[0].get('indicators', {}).get('quote', [{}])[0]
         
-    data = response.json()
-    body = data.get('chart', {}).get('result', [])
-    if not body:
-        return None
+        closes = indicators.get('close', [])
+        highs = indicators.get('high', [])
+        lows = indicators.get('low', [])
+        volumes = indicators.get('volume', [])
         
-    timestamps = body[0].get('timestamp', [])
-    indicators = body[0].get('indicators', {}).get('quote', [{}])[0]
-    
-    closes = indicators.get('close', [])
-    highs = indicators.get('high', [])
-    lows = indicators.get('low', [])
-    volumes = indicators.get('volume', [])
-    
-    if not timestamps or not closes:
-        return None
+        if not timestamps or not closes:
+            return None
+            
+        df = pd.DataFrame({
+            'Close': closes,
+            'High': highs,
+            'Low': lows,
+            'Volume': volumes
+        }, index=pd.to_datetime(timestamps, unit='s'))
         
-    df = pd.DataFrame({
-        'Close': closes,
-        'High': highs,
-        'Low': lows,
-        'Volume': volumes
-    }, index=pd.to_datetime(timestamps, unit='s'))
-    
-    # Rimuoviamo eventuali righe con dati mancanti
-    df = df.dropna()
-    return df
+        df = df.dropna()
+        return df
+    except:
+        return None
 
 def check_timeframe_signal(ticker_symbol, tf):
     try:
@@ -185,24 +186,27 @@ def scan_all_markets():
                 f"1. Stoch RSI uscito da ipercomprato ({SELL_LOW}-{SELL_HIGH})\n"
                 f"2. Prezzo inferiore al VWAP intraday\n"
                 f"3. Tendenza ribassista confermata sotto EMA 200"
-            
+            )
 
 def bot_loop():
     print("Inizializzazione bot...")
-    send_telegram_message("🚀 **Bot Intraday V4 Definitivo Online!** Rimosse tutte le librerie instabili. Connessione HTTP nativa funzionante.")
+    send_telegram_message("🚀 **Bot Intraday V4.1 Definitivo Online!** Struttura spazi corretto al 100%.")
     print("Bot in esecuzione...")
     
-    # --- TEST DI AVVIO FORZATO ---
     print("\n[TEST AVVIO] Eseguo una scansione di prova immediata per verificare i log...")
     print(f"--- 📈 Scansione Intraday Nativa (15m+30m) Avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---")
-    # Forziamo la prima lettura sui primi 3 titoli italiani per vedere se rispondono
     for ticker in ['ISP.MI', 'UCG.MI', 'ENI.MI']:
         print(f"[TEST] Controllo accoppiata 15m/30m per {ticker}...")
         sig_15m = check_timeframe_signal(ticker, '15m')
         print(f"[TEST] Risultato {ticker}: {sig_15m}")
     print("[TEST AVVIO] Test completato con successo. Ora entro nel ciclo standard.\n")
-    # ------------------------------
 
     while True:
         scan_all_markets()
         time.sleep(300)
+
+if __name__ == "__main__":
+    t_web = Thread(target=run_web_server)
+    t_web.start()
+    bot_loop()
+
