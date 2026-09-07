@@ -111,8 +111,8 @@ def get_clean_data(ticker, interval):
         if not body:
             return None
             
-        timestamps = body[0].get('timestamp', [])
-        indicators = body[0].get('indicators', {}).get('quote', [{}])[0]
+        timestamps = body.get('timestamp', [])
+        indicators = body.get('indicators', {}).get('quote', [{}])
         
         closes = indicators.get('close', [])
         highs = indicators.get('high', [])
@@ -161,10 +161,10 @@ def check_timeframe_signal(ticker_symbol, tf):
 
 def scan_all_markets():
     if not is_market_time():
-        print(f"[{datetime.now(LOCAL_TZ).strftime('%H:%M:%S')}] Mercati chiusi. Standby...")
+        print(f"[{datetime.now(LOCAL_TZ).strftime('%H:%M:%S')}] Mercati chiusi. Standby...", flush=True)
         return
 
-    print(f"\n--- 📈 Scansione Intraday Nativa (15m+30m) Avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---")
+    print(f"\n--- 📈 Scansione Intraday Nativa (15m+30m) Avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---", flush=True)
     for ticker in TICKERS:
         sig_15m = check_timeframe_signal(ticker, '15m')
         sig_30m = check_timeframe_signal(ticker, '30m')
@@ -189,17 +189,17 @@ def scan_all_markets():
             )
 
 def bot_loop():
-    print("Inizializzazione bot...")
-    send_telegram_message("🚀 **Bot Intraday V4.1 Definitivo Online!** Struttura spazi corretto al 100%.")
-    print("Bot in esecuzione...")
+    print("Inizializzazione bot...", flush=True)
+    send_telegram_message("🚀 **Bot Intraday V4.2 Realtime Online!** Log istantanei attivi con monitoraggio dei dati puliti.")
+    print("Bot in esecuzione...", flush=True)
     
-    print("\n[TEST AVVIO] Eseguo una scansione di prova immediata per verificare i log...")
-    print(f"--- 📈 Scansione Intraday Nativa (15m+30m) Avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---")
+    print("\n[TEST AVVIO] Eseguo una scansione di prova immediata per verificare i log...", flush=True)
+    print(f"--- 📈 Scansione Intraday Nativa (15m+30m) Avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---", flush=True)
     for ticker in ['ISP.MI', 'UCG.MI', 'ENI.MI']:
-        print(f"[TEST] Controllo accoppiata 15m/30m per {ticker}...")
+        print(f"[TEST] Controllo accoppiata 15m/30m per {ticker}...", flush=True)
         sig_15m = check_timeframe_signal(ticker, '15m')
-        print(f"[TEST] Risultato {ticker}: {sig_15m}")
-    print("[TEST AVVIO] Test completato con successo. Ora entro nel ciclo standard.\n")
+        print(f"[TEST] Risultato {ticker}: {sig_15m}", flush=True)
+    print("[TEST AVVIO] Test completato con successo. Ora entro nel ciclo standard.\n", flush=True)
 
     while True:
         scan_all_markets()
@@ -209,4 +209,5 @@ if __name__ == "__main__":
     t_web = Thread(target=run_web_server)
     t_web.start()
     bot_loop()
+
 
