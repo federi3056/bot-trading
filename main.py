@@ -185,7 +185,7 @@ def scan_all_markets():
                 f"1. Stoch RSI uscito da ipercomprato ({SELL_LOW}-{SELL_HIGH})\n"
                 f"2. Prezzo inferiore al VWAP intraday\n"
                 f"3. Tendenza ribassista confermata sotto EMA 200"
-            )
+            
 
 def bot_loop():
     print("Inizializzazione bot...")
