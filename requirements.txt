@@ -1,7 +1,8 @@
-yfinance>=0.2.58
+yfinance-cache
 pandas
-pytz
-flask
 requests
+pytz
+Flask
+
 
 
