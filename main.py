@@ -33,7 +33,7 @@ START_HOUR = 9
 END_HOUR = 23
 
 # --- PANIERE DI PROVA RIDOTTO ---
-TICKERS = ['ISP:XMIL','UCG:XMIL','AAPL:NASDAQ', 'MSFT:NASDAQ']
+TICKERS = ['ISP/MILAN','UCG/MILAN','AAPL','MSFT']
 
 # --- PARAMETRI STRATEGIA INTRADAY DIREZIONALE ---
 BUY_LOW, BUY_HIGH = 0, 15
@@ -90,8 +90,8 @@ def get_clean_data(ticker, interval):
     """Scarica i dati ufficiali intraday tramite la chiave Twelve Data senza blocchi."""
     tf_query = "15min" if interval == "15m" else "30min"
     
-    # URL CORRETTO E BLINDATO: Rimosso l'errore di sintassi
-    url = f"https://twelvedata.com/{ticker}?interval={tf_query}&outputsize=250&apikey={TWELVE_DATA_API_KEY}"
+    # ✅ URL CORRETTO E COSTRUTTO SECONDO LE SPECIFICHE DI TWELVE DATA
+    url = f"https://twelvedata.com{ticker}&interval={tf_query}&outputsize=250&apikey={TWELVE_DATA_API_KEY}"
     
     try:
         response = requests.get(url, timeout=10)
@@ -101,9 +101,9 @@ def get_clean_data(ticker, interval):
             
         data = response.json()
         
-        # Gestione errori formali restituiti dall'API
+        # Gestione errori formali restituiti dall'API (es. chiave errata o ticker inesistente)
         if "values" not in data:
-            print(f"[DEBUG API] Messaggio di rifiuto da Twelve Data: {data}", flush=True)
+            print(f"[DEBUG API] Messaggio di rifiuto da Twelve Data per {ticker}: {data}", flush=True)
             return None
             
         values = data["values"]
