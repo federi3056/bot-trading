@@ -91,7 +91,7 @@ def get_clean_data(ticker, interval):
     tf_query = "15min" if interval == "15m" else "30min"
     
     # URL CORRETTO E BLINDATO: Rimosso l'errore di sintassi
-    url = f"https://twelvedata.com{ticker}&interval={tf_query}&outputsize=250&apikey={TWELVE_DATA_API_KEY}"
+    url = f"https://twelvedata.com/{ticker}?interval={tf_query}&outputsize=250&apikey={TWELVE_DATA_API_KEY}"
     
     try:
         response = requests.get(url, timeout=10)
