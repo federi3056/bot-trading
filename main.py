@@ -141,7 +141,7 @@ def check_timeframe_signal(ticker_symbol, tf):
 
         p_close = df.iloc[-1]['Close'] 
         p_vwap = df.iloc[-1]['VWAP']
-        p_ema = df.iloc[-1]['EMA_200']
+        p_ema = df.iloc[-1]['EMA_50']
         k_curr = df.iloc[-1]['StochRSI_K']
         d_curr = df.iloc[-1]['StochRSI_D']
 
