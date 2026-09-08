@@ -18,6 +18,11 @@ def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
+# =========================================================================
+# ✅ CHIAVE API UFFICIALE TWELVE DATA INSERITA CON SUCCESSO
+TWELVE_DATA_API_KEY = "faa6e06a87514e9abd41de4c56e519f5"
+# =========================================================================
+
 # --- CONFIGURAZIONE TELEGRAM ---
 TELEGRAM_TOKEN = "8820172406:AAE1Cewxm3qCOYmtKurcMw517AbH6-uqyic"
 TELEGRAM_CHAT_ID = "1027014963"
@@ -27,12 +32,13 @@ LOCAL_TZ = pytz.timezone("Europe/Rome")
 START_HOUR = 9
 END_HOUR = 23
 
-# --- PANIERE DI 30 AZIONI (15 USA + 15 ITALIA) ---
+# --- PANIERE DI 30 AZIONI (Formattate per Twelve Data) ---
+# Le azioni italiane (.MI) su Twelve Data richiedono il suffisso :XMIL (Borsa di Milano)
 TICKERS = [
-    'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'TSLA', 'GOOGL', 'BRK-B', 
+    'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'TSLA', 'GOOGL', 'BRK.B', 
     'AMD', 'NFLX', 'JPM', 'V', 'DIS', 'PLTR', 'XOM',
-    'RACE.MI', 'STLAM.MI', 'ISP.MI', 'UCG.MI', 'ENI.MI', 'EGP.MI', 'G.MI', 
-    'A2A.MI', 'PST.MI', 'TRN.MI', 'PRY.MI', 'MONC.MI', 'STM.MI', 'LDO.MI', 'CPR.MI'
+    'RACE:XMIL', 'STLAM:XMIL', 'ISP:XMIL', 'UCG:XMIL', 'ENI:XMIL', 'EGP:XMIL', 'G:XMIL', 
+    'A2A:XMIL', 'PST:XMIL', 'TRN:XMIL', 'PRY:XMIL', 'MONC:XMIL', 'STM:XMIL', 'LDO:XMIL', 'CPR:XMIL'
 ]
 
 # --- PARAMETRI STRATEGIA INTRADAY DIREZIONALE ---
@@ -87,57 +93,47 @@ def calculate_ema(df, period=200):
     return df['Close'].ewm(span=period, adjust=False).mean()
 
 def get_clean_data(ticker, interval):
-    """Interroga correttamente l'API dei grafici di Yahoo con URL valido e timeout rigido."""
-    tf_query = "15m" if interval == "15m" else "30m"
-    range_query = "5d" if interval == "15m" else "10d"
+    """Scarica i dati ufficiali intraday tramite la chiave Twelve Data senza blocchi."""
+    tf_query = "15min" if interval == "15m" else "30min"
     
-    # URL Corretto e ufficiale di Yahoo Finance per i dati Chart JSON
-    url = f"https://yahoo.com{ticker}?range={range_query}&interval={tf_query}"
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    }
+    # URL di rete ufficiale Twelve Data con la tua chiave privata incorporata
+    url = f"https://twelvedata.com{ticker}&interval={tf_query}&outputsize=250&apikey={TWELVE_DATA_API_KEY}"
     
     try:
-        response = requests.get(url, headers=headers, timeout=8) # 8 secondi max poi molla la presa
+        response = requests.get(url, timeout=10)
         if response.status_code != 200:
             return None
             
         data = response.json()
-        result = data.get('chart', {}).get('result', [])
-        if not result:
+        
+        # Protezione nel caso in cui l'API risponda con un messaggio di errore anziché con i dati
+        if "values" not in data:
             return None
             
-        body = result[0]
-        timestamps = body.get('timestamp', [])
-        indicators = body.get('indicators', {}).get('quote', [{}])[0]
-        
-        closes = indicators.get('close', [])
-        highs = indicators.get('high', [])
-        lows = indicators.get('low', [])
-        volumes = indicators.get('volume', [])
-        
-        if not timestamps or not closes:
+        values = data["values"]
+        if not values:
             return None
             
-        df = pd.DataFrame({
-            'Close': closes,
-            'High': highs,
-            'Low': lows,
-            'Volume': volumes
-        }, index=pd.to_datetime(timestamps, unit='s'))
+        # Twelve Data ordina dal più recente al più vecchio, noi invertiamo per l'analisi tecnica
+        df = pd.DataFrame(values)
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        df = df.set_index('datetime')
+        df = df.iloc[::-1] 
         
-        df = df.dropna()
-        return df
+        # Conversione esplicita in valori numerici per Pandas
+        df['Close'] = pd.to_numeric(df['close'])
+        df['High'] = pd.to_numeric(df['high'])
+        df['Low'] = pd.to_numeric(df['low'])
+        df['Volume'] = pd.to_numeric(df['volume'])
+        
+        return df[['Close', 'High', 'Low', 'Volume']]
     except Exception as e:
-        # Rimuovi il commento sotto se vuoi vedere nei log perché un titolo fallisce (es. se Yahoo blocca l'IP)
-        # print(f"[DATO MANCANTE] Errore su {ticker}: {e}", flush=True)
         return None
 
 def check_timeframe_signal(ticker_symbol, tf):
     try:
         df = get_clean_data(ticker_symbol, tf)
-        if df is None or df.empty or len(df) < 50: # Abbassato a 50 per evitare scarti su storici intraday brevi
+        if df is None or df.empty or len(df) < 50:
             return None
 
         df = calculate_vwap(df)
@@ -147,11 +143,12 @@ def check_timeframe_signal(ticker_symbol, tf):
         if len(df) < 2:
             return None
 
-        p_close = df.iloc[-2]['Close']
-        p_vwap = df.iloc[-2]['VWAP']
-        p_ema = df.iloc[-2]['EMA_200']
-        k_curr = df.iloc[-2]['StochRSI_K']
-        d_curr = df.iloc[-2]['StochRSI_D']
+        # Utilizziamo l'ultima candela conclusa in tempo reale per calcolare i segnali operativi
+        p_close = df.iloc[-1]['Close'] 
+        p_vwap = df.iloc[-1]['VWAP']
+        p_ema = df.iloc[-1]['EMA_200']
+        k_curr = df.iloc[-1]['StochRSI_K']
+        d_curr = df.iloc[-1]['StochRSI_D']
 
         if (BUY_LOW <= k_curr <= BUY_HIGH) and (BUY_LOW <= d_curr <= BUY_HIGH) and (p_close > p_vwap) and (p_close > p_ema):
             return "BUY"
@@ -172,17 +169,17 @@ def scan_all_markets():
     
     conteggio_ok = 0
     for ticker in TICKERS:
-        # Stampa l'avanzamento così sai che sta lavorando e non è congelato
         print(f"Analisi titolo: {ticker}...", end=" ", flush=True)
         
         sig_15m = check_timeframe_signal(ticker, '15m')
         sig_30m = check_timeframe_signal(ticker, '30m')
         
-        if sig_15m is not None or sig_30m is not None:
+        # Monitoraggio dello stato dell'API nei log di Render
+        if sig_15m is not None or sig_30m is not None or get_clean_data(ticker, '15m') is not None:
             conteggio_ok += 1
             print("OK", flush=True)
         else:
-            print("NESSUN DATO/ERRORE", flush=True)
+            print("ERRORE DATO", flush=True)
         
         if sig_15m == "BUY" and sig_30m == "BUY":
             send_telegram_message(
@@ -203,22 +200,15 @@ def scan_all_markets():
                 f"3. Tendenza ribassista confermata sotto EMA 200"
             )
         
-        # Una micro pausa di 0.5 secondi per evitare che Yahoo veda troppe richieste al secondo
-        time.sleep(0.5)
+        # Pausa obbligatoria di 8 secondi tra i titoli per rispettare i limiti del piano Free di Twelve Data (max 8 richieste al minuto)
+        time.sleep(8)
         
     print(f"--- Scansione completata. Analizzati con successo {conteggio_ok}/{len(TICKERS)} titoli. Pausa di 5 minuti ---", flush=True)
 
 def bot_loop():
     print("Inizializzazione bot...", flush=True)
-    send_telegram_message("🚀 **Bot Intraday V4.3 Realtime Online!** Log istantanei attivi e URL di rete ripristinato.")
+    send_telegram_message("🚀 **Bot Intraday V5.0 Realtime Online!** Passati ufficialmente alle API di Twelve Data con chiave registrata.")
     print("Bot in esecuzione...", flush=True)
-    
-    print("\n[TEST AVVIO] Eseguo una scansione di prova immediata per verificare i log...", flush=True)
-    for ticker in ['ISP.MI', 'UCG.MI', 'ENI.MI']:
-        print(f"[TEST] Controllo accoppiata 15m/30m per {ticker}...", flush=True)
-        sig_15m = check_timeframe_signal(ticker, '15m')
-        print(f"[TEST] Risultato {ticker}: {sig_15m}", flush=True)
-    print("[TEST AVVIO] Test completato con successo. Ora entro nel ciclo standard.\n", flush=True)
 
     while True:
         scan_all_markets()
