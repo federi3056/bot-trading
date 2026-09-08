@@ -49,7 +49,7 @@ def is_market_time():
     return False
 
 def send_telegram_message(message):
-    url = f"https://telegram.org{TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload, timeout=10)
@@ -92,7 +92,7 @@ def get_clean_data(ticker, interval):
     tf_query = "15min" if interval == "15m" else "30min"
     
     # ✅ URL FIXATO: Punta all'endpoint ufficiale di Twelve Data e passa le variabili in modo corretto
-    url = f"https://twelvedata.com{ticker}&interval={tf_query}&outputsize=250&apikey={TWELVE_DATA_API_KEY}"
+    url = f"https://api.twelvedata.com/time_series?symbol={ticker}&interval={tf_query}&outputsize=250&apikey={TWELVE_DATA_API_KEY}"
     
     try:
         response = requests.get(url, timeout=10)
