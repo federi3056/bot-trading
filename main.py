@@ -207,8 +207,9 @@ def scan_all_markets():
 
 def bot_loop():
     print("Inizializzazione bot...", flush=True)
-    send_telegram_message("🚀 **Bot Intraday V5.0 Realtime Online!** Passati ufficialmente alle API di Twelve Data con chiave registrata.")
+    send_telegram_message("🚀 **Bot Intraday V5.1 Online!** Monitoraggio mercati Twelve Data attivo.")
     print("Bot in esecuzione...", flush=True)
+    print("[INFO] Avvio diretto del ciclo standard scaglionato...", flush=True)
 
     while True:
         scan_all_markets()
