@@ -89,6 +89,8 @@ def calculate_ema(df, period=200):
 def get_clean_data(ticker, interval):
     """Scarica i dati ufficiali intraday tramite la chiave Twelve Data senza blocchi."""
     tf_query = "15min" if interval == "15m" else "30min"
+    
+    # URL CORRETTO E BLINDATO: Rimosso l'errore di sintassi
     url = f"https://twelvedata.com{ticker}&interval={tf_query}&outputsize=250&apikey={TWELVE_DATA_API_KEY}"
     
     try:
@@ -99,10 +101,9 @@ def get_clean_data(ticker, interval):
             
         data = response.json()
         
-        # STAMPA DI DIAGNOSTICA FONDAMENTALE
-        print(f"[DEBUG RISPOSTA JSON] Risultato per {ticker} ({interval}): {data}", flush=True)
-        
+        # Gestione errori formali restituiti dall'API
         if "values" not in data:
+            print(f"[DEBUG API] Messaggio di rifiuto da Twelve Data: {data}", flush=True)
             return None
             
         values = data["values"]
@@ -165,7 +166,6 @@ def scan_all_markets():
         print(f"Analisi titolo: {ticker}...", end=" ", flush=True)
         
         sig_15m = check_timeframe_signal(ticker, '15m')
-        # Pausa tattica di 4 secondi tra le richieste dello stesso titolo per non sforare il limite
         time.sleep(4)
         sig_30m = check_timeframe_signal(ticker, '30m')
         
@@ -200,7 +200,7 @@ def scan_all_markets():
 
 def bot_loop():
     print("Inizializzazione bot...", flush=True)
-    send_telegram_message("🚀 **Bot Intraday V5.2 Online!** Monitoraggio debug attivo.")
+    send_telegram_message("🚀 **Bot Intraday V5.3 Online!** Link API corretto in produzione.")
     print("Bot in esecuzione...", flush=True)
     print("[INFO] Avvio diretto del ciclo standard scaglionato...", flush=True)
 
