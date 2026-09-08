@@ -117,7 +117,8 @@ def get_clean_data(ticker, interval):
         df['Low'] = pd.to_numeric(df['low'])
         df['Volume'] = pd.to_numeric(df['volume'])
         
-        return df
+ return df[['Close', 'High', 'Low', 'Volume']]
+    
     except Exception as e:
         print(f"[DEBUG ECCEZIONE] Errore critico su {ticker}: {e}", flush=True)
         return None
