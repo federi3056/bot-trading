@@ -2,5 +2,5 @@ pandas
 requests
 pytz
 Flask
-
+twelvedata
 
