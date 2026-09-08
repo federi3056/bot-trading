@@ -32,8 +32,7 @@ LOCAL_TZ = pytz.timezone("Europe/Rome")
 START_HOUR = 9
 END_HOUR = 23
 
-# --- PANIERE DI PROVA CORRETTO PER TWELVE DATA ---
-# Per Twelve Data le azioni italiane usano l'exchange MILAN separato da una barra, oppure solo il ticker se l'API lo riconosce automaticamente con il paese.
+# --- PANIERE DI PROVA USA (Stabile al 100% sulla chiave gratuita) ---
 TICKERS = ['TSLA', 'NVDA', 'AAPL', 'MSFT']
 
 # --- PARAMETRI STRATEGIA INTRADAY DIREZIONALE ---
@@ -84,14 +83,12 @@ def calculate_stoch_rsi(df, period=14, k_smooth=3, d_smooth=3):
     df['StochRSI_D'] = df['StochRSI_K'].rolling(window=d_smooth).mean()
     return df
 
-def calculate_ema(df, period=200):
+def calculate_ema(df, period=50):
     return df['Close'].ewm(span=period, adjust=False).mean()
 
 def get_clean_data(ticker, interval):
     """Scarica i dati ufficiali intraday tramite l'endpoint corretto di Twelve Data."""
     tf_query = "15min" if interval == "15m" else "30min"
-    
-    # ✅ URL FIXATO: Punta all'endpoint ufficiale di Twelve Data e passa le variabili in modo corretto
     url = f"https://api.twelvedata.com/time_series?symbol={ticker}&interval={tf_query}&outputsize=100&apikey={TWELVE_DATA_API_KEY}"
     
     try:
@@ -102,7 +99,6 @@ def get_clean_data(ticker, interval):
             
         data = response.json()
         
-        # Gestione errori formali restituiti dall'API
         if "values" not in data:
             print(f"[DEBUG API] Messaggio di rifiuto da Twelve Data per {ticker}: {data}", flush=True)
             return None
@@ -121,14 +117,20 @@ def get_clean_data(ticker, interval):
         df['Low'] = pd.to_numeric(df['low'])
         df['Volume'] = pd.to_numeric(df['volume'])
         
-        return df[['Close', 'High', 'Low', 'Volume']]
+        return df
     except Exception as e:
         print(f"[DEBUG ECCEZIONE] Errore critico su {ticker}: {e}", flush=True)
         return None
 
+def check_timeframe_signal(ticker_symbol, tf):
+    """Calcola gli indicatori tecnici e genera i segnali operativi."""
+    try:
+        df = get_clean_data(ticker_symbol, tf)
+        if df is None or df.empty or len(df) < 10:
+            return None
+
         df = calculate_vwap(df)
         df = calculate_stoch_rsi(df)
-        # ✅ Questa riga calcola la media e la salva nella colonna EMA_50
         df['EMA_50'] = calculate_ema(df, 50)
 
         if len(df) < 2:
@@ -136,14 +138,11 @@ def get_clean_data(ticker, interval):
 
         p_close = df.iloc[-1]['Close'] 
         p_vwap = df.iloc[-1]['VWAP']
-        
-        # ✅ Assicurati che qui ci sia scritto EMA_50 e NON EMA_200
         p_ema = df.iloc[-1]['EMA_50']
-        
         k_curr = df.iloc[-1]['StochRSI_K']
         d_curr = df.iloc[-1]['StochRSI_D']
 
-      if (BUY_LOW <= k_curr <= BUY_HIGH) and (BUY_LOW <= d_curr <= BUY_HIGH) and (p_close > p_vwap) and (p_close > p_ema):
+        if (BUY_LOW <= k_curr <= BUY_HIGH) and (BUY_LOW <= d_curr <= BUY_HIGH) and (p_close > p_vwap) and (p_close > p_ema):
             return "BUY"
         elif (SELL_LOW <= k_curr <= SELL_HIGH) and (SELL_LOW <= d_curr <= SELL_HIGH) and (p_close < p_vwap) and (p_close < p_ema):
             return "SELL"
@@ -165,7 +164,7 @@ def scan_all_markets():
         print(f"Analisi titolo: {ticker}...", end=" ", flush=True)
         
         sig_15m = check_timeframe_signal(ticker, '15m')
-        time.sleep(4)  # Rispetto dei limiti della chiave gratuita
+        time.sleep(12)  # ⏱️ Pausa rallentamento per evitare blocchi della chiave free
         sig_30m = check_timeframe_signal(ticker, '30m')
         
         if sig_15m is not None or sig_30m is not None:
@@ -181,7 +180,7 @@ def scan_all_markets():
                 f"**Analisi:** Confluenza direzionale su **15m** e **30m**.\n"
                 f"1. Stoch RSI uscito da ipervenduto ({BUY_LOW}-{BUY_HIGH})\n"
                 f"2. Prezzo superiore al VWAP intraday\n"
-                f"3. Tendenza rialzista protetta da EMA 200"
+                f"3. Tendenza rialzista protetta da EMA 50"
             )
         elif sig_15m == "SELL" and sig_30m == "SELL":
             send_telegram_message(
@@ -190,16 +189,16 @@ def scan_all_markets():
                 f"**Analisi:** Confluenza short su **15m** e **30m**.\n"
                 f"1. Stoch RSI uscito da ipercomprato ({SELL_LOW}-{SELL_HIGH})\n"
                 f"2. Prezzo inferiore al VWAP intraday\n"
-                f"3. Tendenza ribassista confermata sotto EMA 200"
+                f"3. Tendenza ribassista confermata sotto EMA 50"
             )
         
-        time.sleep(8)
+        time.sleep(12)  # ⏱️ Seconda pausa protettiva
         
     print(f"--- Scansione completata. Analizzati con successo {conteggio_ok}/{len(TICKERS)} titoli. Pausa di 5 minuti ---", flush=True)
 
 def bot_loop():
     print("Inizializzazione bot...", flush=True)
-    send_telegram_message("🚀 **Bot Intraday V5.3 Online!** Link API corretto in produzione.")
+    send_telegram_message("🚀 **Bot Intraday V5.5 Online!** Sintassi ed EMA_50 allineati correttamente.")
     print("Bot in esecuzione...", flush=True)
     print("[INFO] Avvio diretto del ciclo standard scaglionato...", flush=True)
 
@@ -211,5 +210,3 @@ if __name__ == "__main__":
     t_web = Thread(target=run_web_server)
     t_web.start()
     bot_loop()
-
-
