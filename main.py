@@ -126,26 +126,24 @@ def get_clean_data(ticker, interval):
         print(f"[DEBUG ECCEZIONE] Errore critico su {ticker}: {e}", flush=True)
         return None
 
-def check_timeframe_signal(ticker_symbol, tf):
-    try:
-        df = get_clean_data(ticker_symbol, tf)
-        if df is None or df.empty or len(df) < 10:
-            return None
-
         df = calculate_vwap(df)
         df = calculate_stoch_rsi(df)
-        df['EMA_200'] = calculate_ema(df, 50)
+        # ✅ Questa riga calcola la media e la salva nella colonna EMA_50
+        df['EMA_50'] = calculate_ema(df, 50)
 
         if len(df) < 2:
             return None
 
         p_close = df.iloc[-1]['Close'] 
         p_vwap = df.iloc[-1]['VWAP']
+        
+        # ✅ Assicurati che qui ci sia scritto EMA_50 e NON EMA_200
         p_ema = df.iloc[-1]['EMA_50']
+        
         k_curr = df.iloc[-1]['StochRSI_K']
         d_curr = df.iloc[-1]['StochRSI_D']
 
-        if (BUY_LOW <= k_curr <= BUY_HIGH) and (BUY_LOW <= d_curr <= BUY_HIGH) and (p_close > p_vwap) and (p_close > p_ema):
+      if (BUY_LOW <= k_curr <= BUY_HIGH) and (BUY_LOW <= d_curr <= BUY_HIGH) and (p_close > p_vwap) and (p_close > p_ema):
             return "BUY"
         elif (SELL_LOW <= k_curr <= SELL_HIGH) and (SELL_LOW <= d_curr <= SELL_HIGH) and (p_close < p_vwap) and (p_close < p_ema):
             return "SELL"
