@@ -134,7 +134,7 @@ def check_timeframe_signal(ticker_symbol, tf):
 
         df = calculate_vwap(df)
         df = calculate_stoch_rsi(df)
-        df['EMA_200'] = calculate_ema(df, 200)
+        df['EMA_200'] = calculate_ema(df, 50)
 
         if len(df) < 2:
             return None
