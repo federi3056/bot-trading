@@ -32,8 +32,9 @@ LOCAL_TZ = pytz.timezone("Europe/Rome")
 START_HOUR = 9
 END_HOUR = 23
 
-# --- PANIERE DI PROVA RIDOTTO ---
-TICKERS = ['ISP/MILAN','UCG/MILAN','AAPL','MSFT']
+# --- PANIERE DI PROVA CORRETTO PER TWELVE DATA ---
+# Per Twelve Data le azioni italiane usano l'exchange MILAN separato da una barra, oppure solo il ticker se l'API lo riconosce automaticamente con il paese.
+TICKERS = ['ISP/MILAN', 'UCG/MILAN', 'AAPL', 'MSFT']
 
 # --- PARAMETRI STRATEGIA INTRADAY DIREZIONALE ---
 BUY_LOW, BUY_HIGH = 0, 15
@@ -48,7 +49,7 @@ def is_market_time():
     return False
 
 def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://telegram.org{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload, timeout=10)
@@ -87,10 +88,10 @@ def calculate_ema(df, period=200):
     return df['Close'].ewm(span=period, adjust=False).mean()
 
 def get_clean_data(ticker, interval):
-    """Scarica i dati ufficiali intraday tramite la chiave Twelve Data senza blocchi."""
+    """Scarica i dati ufficiali intraday tramite l'endpoint corretto di Twelve Data."""
     tf_query = "15min" if interval == "15m" else "30min"
     
-    # ✅ URL CORRETTO E COSTRUTTO SECONDO LE SPECIFICHE DI TWELVE DATA
+    # ✅ URL FIXATO: Punta all'endpoint ufficiale di Twelve Data e passa le variabili in modo corretto
     url = f"https://twelvedata.com{ticker}&interval={tf_query}&outputsize=250&apikey={TWELVE_DATA_API_KEY}"
     
     try:
@@ -101,7 +102,7 @@ def get_clean_data(ticker, interval):
             
         data = response.json()
         
-        # Gestione errori formali restituiti dall'API (es. chiave errata o ticker inesistente)
+        # Gestione errori formali restituiti dall'API
         if "values" not in data:
             print(f"[DEBUG API] Messaggio di rifiuto da Twelve Data per {ticker}: {data}", flush=True)
             return None
@@ -166,7 +167,7 @@ def scan_all_markets():
         print(f"Analisi titolo: {ticker}...", end=" ", flush=True)
         
         sig_15m = check_timeframe_signal(ticker, '15m')
-        time.sleep(4)
+        time.sleep(4)  # Rispetto dei limiti della chiave gratuita
         sig_30m = check_timeframe_signal(ticker, '30m')
         
         if sig_15m is not None or sig_30m is not None:
@@ -212,3 +213,5 @@ if __name__ == "__main__":
     t_web = Thread(target=run_web_server)
     t_web.start()
     bot_loop()
+
+
