@@ -32,14 +32,8 @@ LOCAL_TZ = pytz.timezone("Europe/Rome")
 START_HOUR = 9
 END_HOUR = 23
 
-# --- PANIERE DI 30 AZIONI (Formattate per Twelve Data) ---
-# Le azioni italiane (.MI) su Twelve Data richiedono il suffisso :XMIL (Borsa di Milano)
-TICKERS = [
-    'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'TSLA', 'GOOGL', 'BRK.B', 
-    'AMD', 'NFLX', 'JPM', 'V', 'DIS', 'PLTR', 'XOM',
-    'RACE:XMIL', 'STLAM:XMIL', 'ISP:XMIL', 'UCG:XMIL', 'ENI:XMIL', 'EGP:XMIL', 'G:XMIL', 
-    'A2A:XMIL', 'PST:XMIL', 'TRN:XMIL', 'PRY:XMIL', 'MONC:XMIL', 'STM:XMIL', 'LDO:XMIL', 'CPR:XMIL'
-]
+# --- PANIERE DI PROVA RIDOTTO ---
+TICKERS = ['AAPL', 'MSFT']
 
 # --- PARAMETRI STRATEGIA INTRADAY DIREZIONALE ---
 BUY_LOW, BUY_HIGH = 0, 15
@@ -95,18 +89,19 @@ def calculate_ema(df, period=200):
 def get_clean_data(ticker, interval):
     """Scarica i dati ufficiali intraday tramite la chiave Twelve Data senza blocchi."""
     tf_query = "15min" if interval == "15m" else "30min"
-    
-    # URL di rete ufficiale Twelve Data con la tua chiave privata incorporata
     url = f"https://twelvedata.com{ticker}&interval={tf_query}&outputsize=250&apikey={TWELVE_DATA_API_KEY}"
     
     try:
         response = requests.get(url, timeout=10)
         if response.status_code != 200:
+            print(f"[DEBUG API] Status Code Errato per {ticker}: {response.status_code}", flush=True)
             return None
             
         data = response.json()
         
-        # Protezione nel caso in cui l'API risponda con un messaggio di errore anziché con i dati
+        # STAMPA DI DIAGNOSTICA FONDAMENTALE
+        print(f"[DEBUG RISPOSTA JSON] Risultato per {ticker} ({interval}): {data}", flush=True)
+        
         if "values" not in data:
             return None
             
@@ -114,13 +109,11 @@ def get_clean_data(ticker, interval):
         if not values:
             return None
             
-        # Twelve Data ordina dal più recente al più vecchio, noi invertiamo per l'analisi tecnica
         df = pd.DataFrame(values)
         df['datetime'] = pd.to_datetime(df['datetime'])
         df = df.set_index('datetime')
         df = df.iloc[::-1] 
         
-        # Conversione esplicita in valori numerici per Pandas
         df['Close'] = pd.to_numeric(df['close'])
         df['High'] = pd.to_numeric(df['high'])
         df['Low'] = pd.to_numeric(df['low'])
@@ -128,6 +121,7 @@ def get_clean_data(ticker, interval):
         
         return df[['Close', 'High', 'Low', 'Volume']]
     except Exception as e:
+        print(f"[DEBUG ECCEZIONE] Errore critico su {ticker}: {e}", flush=True)
         return None
 
 def check_timeframe_signal(ticker_symbol, tf):
@@ -143,7 +137,6 @@ def check_timeframe_signal(ticker_symbol, tf):
         if len(df) < 2:
             return None
 
-        # Utilizziamo l'ultima candela conclusa in tempo reale per calcolare i segnali operativi
         p_close = df.iloc[-1]['Close'] 
         p_vwap = df.iloc[-1]['VWAP']
         p_ema = df.iloc[-1]['EMA_200']
@@ -172,10 +165,11 @@ def scan_all_markets():
         print(f"Analisi titolo: {ticker}...", end=" ", flush=True)
         
         sig_15m = check_timeframe_signal(ticker, '15m')
+        # Pausa tattica di 4 secondi tra le richieste dello stesso titolo per non sforare il limite
+        time.sleep(4)
         sig_30m = check_timeframe_signal(ticker, '30m')
         
-        # Monitoraggio dello stato dell'API nei log di Render
-        if sig_15m is not None or sig_30m is not None or get_clean_data(ticker, '15m') is not None:
+        if sig_15m is not None or sig_30m is not None:
             conteggio_ok += 1
             print("OK", flush=True)
         else:
@@ -200,14 +194,13 @@ def scan_all_markets():
                 f"3. Tendenza ribassista confermata sotto EMA 200"
             )
         
-        # Pausa obbligatoria di 8 secondi tra i titoli per rispettare i limiti del piano Free di Twelve Data (max 8 richieste al minuto)
         time.sleep(8)
         
     print(f"--- Scansione completata. Analizzati con successo {conteggio_ok}/{len(TICKERS)} titoli. Pausa di 5 minuti ---", flush=True)
 
 def bot_loop():
     print("Inizializzazione bot...", flush=True)
-    send_telegram_message("🚀 **Bot Intraday V5.1 Online!** Monitoraggio mercati Twelve Data attivo.")
+    send_telegram_message("🚀 **Bot Intraday V5.2 Online!** Monitoraggio debug attivo.")
     print("Bot in esecuzione...", flush=True)
     print("[INFO] Avvio diretto del ciclo standard scaglionato...", flush=True)
 
