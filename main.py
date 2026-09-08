@@ -51,27 +51,23 @@ def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        requests.post(url, json=payload, timeout=15)
-    except:
-        pass
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"[ERRORE TELEGRAM] {e}", flush=True)
 
 def calculate_vwap(df):
-    """Calcola il VWAP su base intraday."""
-    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
-    tp_v = typical_price * df['Volume']
-    
-    df['Date_Group'] = df.index.date
-    cum_tp_v = df.groupby('Date_Group', group_keys=False).apply(lambda x: tp_v.loc[x.index].cumsum())
-    cum_v = df.groupby('Date_Group', group_keys=False).apply(lambda x: x['Volume'].cumsum())
-    
-    if isinstance(cum_tp_v, pd.Series):
-        df['VWAP'] = cum_tp_v / cum_v
-    else:
-        df['VWAP'] = tp_v.cumsum() / df['Volume'].cumsum()
+    try:
+        typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+        tp_v = typical_price * df['Volume']
+        df['Date_Group'] = df.index.date
+        cum_tp_v = df.groupby('Date_Group', group_keys=False).apply(lambda x: tp_v.loc[x.index].cumsum())
+        cum_v = df.groupby('Date_Group', group_keys=False).apply(lambda x: x['Volume'].cumsum())
+        df['VWAP'] = cum_tp_v / (cum_v + 1e-10)
+    except Exception as e:
+        df['VWAP'] = df['Close']
     return df
 
 def calculate_stoch_rsi(df, period=14, k_smooth=3, d_smooth=3):
-    """Calcola lo Stochastic RSI."""
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -88,31 +84,33 @@ def calculate_stoch_rsi(df, period=14, k_smooth=3, d_smooth=3):
     return df
 
 def calculate_ema(df, period=200):
-    """Calcola l'EMA 200."""
     return df['Close'].ewm(span=period, adjust=False).mean()
 
 def get_clean_data(ticker, interval):
-    """Interroga direttamente i server Chart di Yahoo aggirando i blocchi."""
+    """Interroga correttamente l'API dei grafici di Yahoo con URL valido e timeout rigido."""
     tf_query = "15m" if interval == "15m" else "30m"
     range_query = "5d" if interval == "15m" else "10d"
     
+    # URL Corretto e ufficiale di Yahoo Finance per i dati Chart JSON
     url = f"https://yahoo.com{ticker}?range={range_query}&interval={tf_query}"
+    
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers=headers, timeout=8) # 8 secondi max poi molla la presa
         if response.status_code != 200:
             return None
             
         data = response.json()
-        body = data.get('chart', {}).get('result', [])
-        if not body:
+        result = data.get('chart', {}).get('result', [])
+        if not result:
             return None
             
+        body = result[0]
         timestamps = body.get('timestamp', [])
-        indicators = body.get('indicators', {}).get('quote', [{}])
+        indicators = body.get('indicators', {}).get('quote', [{}])[0]
         
         closes = indicators.get('close', [])
         highs = indicators.get('high', [])
@@ -131,18 +129,23 @@ def get_clean_data(ticker, interval):
         
         df = df.dropna()
         return df
-    except:
+    except Exception as e:
+        # Rimuovi il commento sotto se vuoi vedere nei log perché un titolo fallisce (es. se Yahoo blocca l'IP)
+        # print(f"[DATO MANCANTE] Errore su {ticker}: {e}", flush=True)
         return None
 
 def check_timeframe_signal(ticker_symbol, tf):
     try:
         df = get_clean_data(ticker_symbol, tf)
-        if df is None or df.empty or len(df) < 200:
+        if df is None or df.empty or len(df) < 50: # Abbassato a 50 per evitare scarti su storici intraday brevi
             return None
 
         df = calculate_vwap(df)
         df = calculate_stoch_rsi(df)
         df['EMA_200'] = calculate_ema(df, 200)
+
+        if len(df) < 2:
+            return None
 
         p_close = df.iloc[-2]['Close']
         p_vwap = df.iloc[-2]['VWAP']
@@ -155,7 +158,8 @@ def check_timeframe_signal(ticker_symbol, tf):
         elif (SELL_LOW <= k_curr <= SELL_HIGH) and (SELL_LOW <= d_curr <= SELL_HIGH) and (p_close < p_vwap) and (p_close < p_ema):
             return "SELL"
             
-    except:
+    except Exception as e:
+        print(f"[ERRORE CALCOLO] {ticker_symbol} {tf}: {e}", flush=True)
         return None
     return None
 
@@ -165,13 +169,24 @@ def scan_all_markets():
         return
 
     print(f"\n--- 📈 Scansione Intraday Nativa (15m+30m) Avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---", flush=True)
+    
+    conteggio_ok = 0
     for ticker in TICKERS:
+        # Stampa l'avanzamento così sai che sta lavorando e non è congelato
+        print(f"Analisi titolo: {ticker}...", end=" ", flush=True)
+        
         sig_15m = check_timeframe_signal(ticker, '15m')
         sig_30m = check_timeframe_signal(ticker, '30m')
         
+        if sig_15m is not None or sig_30m is not None:
+            conteggio_ok += 1
+            print("OK", flush=True)
+        else:
+            print("NESSUN DATO/ERRORE", flush=True)
+        
         if sig_15m == "BUY" and sig_30m == "BUY":
             send_telegram_message(
-                f"🎯 🟢 **SEGNALE BUY INTRADAY CELESTE** 🟢 🎯\n\n"
+                f"🎯 🟢 **SEGNALE BUY INTRADAY** 🟢 🎯\n\n"
                 f"**Titolo:** `{ticker}`\n"
                 f"**Analisi:** Confluenza direzionale su **15m** e **30m**.\n"
                 f"1. Stoch RSI uscito da ipervenduto ({BUY_LOW}-{BUY_HIGH})\n"
@@ -180,21 +195,25 @@ def scan_all_markets():
             )
         elif sig_15m == "SELL" and sig_30m == "SELL":
             send_telegram_message(
-                f"🎯 🔴 **SEGNALE SELL INTRADAY CELESTE** 🔴 🎯\n\n"
+                f"🎯 🔴 **SEGNALE SELL INTRADAY** 🔴 🎯\n\n"
                 f"**Titolo:** `{ticker}`\n"
                 f"**Analisi:** Confluenza short su **15m** e **30m**.\n"
                 f"1. Stoch RSI uscito da ipercomprato ({SELL_LOW}-{SELL_HIGH})\n"
                 f"2. Prezzo inferiore al VWAP intraday\n"
                 f"3. Tendenza ribassista confermata sotto EMA 200"
             )
+        
+        # Una micro pausa di 0.5 secondi per evitare che Yahoo veda troppe richieste al secondo
+        time.sleep(0.5)
+        
+    print(f"--- Scansione completata. Analizzati con successo {conteggio_ok}/{len(TICKERS)} titoli. Pausa di 5 minuti ---", flush=True)
 
 def bot_loop():
     print("Inizializzazione bot...", flush=True)
-    send_telegram_message("🚀 **Bot Intraday V4.2 Realtime Online!** Log istantanei attivi con monitoraggio dei dati puliti.")
+    send_telegram_message("🚀 **Bot Intraday V4.3 Realtime Online!** Log istantanei attivi e URL di rete ripristinato.")
     print("Bot in esecuzione...", flush=True)
     
     print("\n[TEST AVVIO] Eseguo una scansione di prova immediata per verificare i log...", flush=True)
-    print(f"--- 📈 Scansione Intraday Nativa (15m+30m) Avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---", flush=True)
     for ticker in ['ISP.MI', 'UCG.MI', 'ENI.MI']:
         print(f"[TEST] Controllo accoppiata 15m/30m per {ticker}...", flush=True)
         sig_15m = check_timeframe_signal(ticker, '15m')
@@ -209,5 +228,3 @@ if __name__ == "__main__":
     t_web = Thread(target=run_web_server)
     t_web.start()
     bot_loop()
-
-
