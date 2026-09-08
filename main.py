@@ -34,7 +34,7 @@ END_HOUR = 23
 
 # --- PANIERE DI PROVA CORRETTO PER TWELVE DATA ---
 # Per Twelve Data le azioni italiane usano l'exchange MILAN separato da una barra, oppure solo il ticker se l'API lo riconosce automaticamente con il paese.
-TICKERS = ['ISP/MILAN', 'UCG/MILAN', 'AAPL', 'MSFT']
+TICKERS = ['TSLA', 'NVDA', 'AAPL', 'MSFT']
 
 # --- PARAMETRI STRATEGIA INTRADAY DIREZIONALE ---
 BUY_LOW, BUY_HIGH = 0, 15
@@ -129,7 +129,7 @@ def get_clean_data(ticker, interval):
 def check_timeframe_signal(ticker_symbol, tf):
     try:
         df = get_clean_data(ticker_symbol, tf)
-        if df is None or df.empty or len(df) < 50:
+        if df is None or df.empty or len(df) < 10:
             return None
 
         df = calculate_vwap(df)
