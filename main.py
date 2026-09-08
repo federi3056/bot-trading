@@ -92,7 +92,7 @@ def get_clean_data(ticker, interval):
     tf_query = "15min" if interval == "15m" else "30min"
     
     # ✅ URL FIXATO: Punta all'endpoint ufficiale di Twelve Data e passa le variabili in modo corretto
-    url = f"https://api.twelvedata.com/time_series?symbol={ticker}&interval={tf_query}&outputsize=250&apikey={TWELVE_DATA_API_KEY}"
+    url = f"https://api.twelvedata.com/time_series?symbol={ticker}&interval={tf_query}&outputsize=100&apikey={TWELVE_DATA_API_KEY}"
     
     try:
         response = requests.get(url, timeout=10)
