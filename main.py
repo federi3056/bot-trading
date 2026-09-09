@@ -3,14 +3,14 @@ import time
 import threading
 from datetime import datetime, timezone
 
-import requests
-import pandas as pd
 import numpy as np
+import pandas as pd
+import requests
 from flask import Flask, jsonify
 
 
 # ============================================================
-# CONFIGURAZIONE
+# CONFIGURAZIONE GENERALE
 # ============================================================
 
 PORT = int(os.getenv("PORT", "10000"))
@@ -21,17 +21,54 @@ TELEGRAM_URL = "https://api.telegram.org"
 INTERVAL = os.getenv("INTERVAL", "15min")
 OUTPUTSIZE = int(os.getenv("OUTPUTSIZE", "250"))
 
-# Intervallo tra una scansione e la successiva.
-# 900 secondi = 15 minuti.
-SCAN_SECONDS = int(os.getenv("SCAN_SECONDS", "900"))
+# Un gruppo viene analizzato ogni 15 minuti.
+# Con 5 gruppi da 6 titoli:
+# 30 titoli / 6 per gruppo = 5 gruppi
+# 5 gruppi x 15 minuti = circa 75 minuti per completare il giro.
+GROUP_INTERVAL_SECONDS = int(
+    os.getenv("GROUP_INTERVAL_SECONDS", "900")
+)
 
-# Se true, il bot stampa i segnali ma non invia i segnali operativi.
-# Il messaggio di avvio Telegram viene comunque inviato.
+# Sei richieste con 10 secondi di distanza restano sotto il limite
+# gratuito di 8 richieste al minuto.
+REQUEST_DELAY_SECONDS = float(
+    os.getenv("REQUEST_DELAY_SECONDS", "10")
+)
+
+# Il piano gratuito ha un limite giornaliero.
+# Questa configurazione produce circa:
+# 30 richieste ogni 75 minuti = circa 576 richieste al giorno.
+MAX_SYMBOLS_PER_GROUP = int(
+    os.getenv("MAX_SYMBOLS_PER_GROUP", "6")
+)
+
+# Se true, il segnale viene stampato ma non mandato a Telegram.
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
-# Invia un messaggio anche se l'API restituisce errori sui simboli.
-SEND_ERROR_MESSAGES = (
-    os.getenv("SEND_ERROR_MESSAGES", "false").lower() == "true"
+# Se true, dopo un errore API viene mandato anche un messaggio Telegram.
+# Lasciamo false per non riempire la chat di errori.
+SEND_API_ERROR_MESSAGES = (
+    os.getenv("SEND_API_ERROR_MESSAGES", "false").lower() == "true"
+)
+
+# Se true, viene esclusa l'ultima candela ricevuta.
+# È più prudente perché l'ultima candela potrebbe essere ancora aperta.
+USE_ONLY_CLOSED_CANDLES = (
+    os.getenv("USE_ONLY_CLOSED_CANDLES", "true").lower() == "true"
+)
+
+# Bande VWAP.
+VWAP_BAND_MULTIPLIER = float(
+    os.getenv("VWAP_BAND_MULTIPLIER", "2.0")
+)
+
+# Strategia trend.
+STOCH_OVERSOLD = float(
+    os.getenv("STOCH_OVERSOLD", "20")
+)
+
+STOCH_OVERBOUGHT = float(
+    os.getenv("STOCH_OVERBOUGHT", "80")
 )
 
 
@@ -41,14 +78,15 @@ SEND_ERROR_MESSAGES = (
 
 def get_first_env(*names):
     """
-    Legge la prima variabile disponibile tra quelle indicate.
-    Permette di mantenere compatibilità con eventuali nomi già
-    presenti su Render.
+    Restituisce la prima variabile d'ambiente valorizzata.
+    Permette di mantenere compatibilità con i nomi già usati.
     """
     for name in names:
         value = os.getenv(name)
+
         if value is not None and value.strip():
             return value.strip()
+
     return ""
 
 
@@ -72,22 +110,13 @@ TELEGRAM_CHAT_ID = get_first_env(
 
 
 # ============================================================
-# LISTA TITOLI
-# ============================================================
-#
-# IMPORTANTE:
-# - symbol contiene solo il ticker
-# - exchange contiene il codice della borsa Twelve Data
-#
-# Non usare valori come:
-# SAP:XETRA
-# SIE:XETRA
-# MIL:ENI
-#
+# LISTA DEI TITOLI
 # ============================================================
 
 SYMBOLS = {
-    # Stati Uniti
+    # -------------------------
+    # Stati Uniti - NASDAQ
+    # -------------------------
     "AAPL": {"symbol": "AAPL", "exchange": "NASDAQ"},
     "TSLA": {"symbol": "TSLA", "exchange": "NASDAQ"},
     "NVDA": {"symbol": "NVDA", "exchange": "NASDAQ"},
@@ -98,6 +127,9 @@ SYMBOLS = {
     "AMD": {"symbol": "AMD", "exchange": "NASDAQ"},
     "NFLX": {"symbol": "NFLX", "exchange": "NASDAQ"},
 
+    # -------------------------
+    # Stati Uniti - NYSE
+    # -------------------------
     "JPM": {"symbol": "JPM", "exchange": "NYSE"},
     "V": {"symbol": "V", "exchange": "NYSE"},
     "DIS": {"symbol": "DIS", "exchange": "NYSE"},
@@ -105,31 +137,57 @@ SYMBOLS = {
     "XOM": {"symbol": "XOM", "exchange": "NYSE"},
     "PFE": {"symbol": "PFE", "exchange": "NYSE"},
 
+    # -------------------------
     # Germania - Xetra
+    # -------------------------
     "SAP": {"symbol": "SAP", "exchange": "XETR"},
     "SIE": {"symbol": "SIE", "exchange": "XETR"},
     "ALV": {"symbol": "ALV", "exchange": "XETR"},
     "BMW": {"symbol": "BMW", "exchange": "XETR"},
 
+    # -------------------------
     # Francia - Euronext Paris
+    # -------------------------
     "MC": {"symbol": "MC", "exchange": "XPAR"},
     "OR": {"symbol": "OR", "exchange": "XPAR"},
     "AIR": {"symbol": "AIR", "exchange": "XPAR"},
     "BNP": {"symbol": "BNP", "exchange": "XPAR"},
 
+    # -------------------------
     # Paesi Bassi - Euronext Amsterdam
+    # -------------------------
     "ASML": {"symbol": "ASML", "exchange": "XAMS"},
 
+    # -------------------------
     # Italia - Euronext Milan
+    # -------------------------
     "ENI": {"symbol": "ENI", "exchange": "XMIL"},
     "ISP": {"symbol": "ISP", "exchange": "XMIL"},
     "ENEL": {"symbol": "ENEL", "exchange": "XMIL"},
 
+    # -------------------------
     # Regno Unito - London Stock Exchange
+    # -------------------------
     "HSBA": {"symbol": "HSBA", "exchange": "XLON"},
     "ULVR": {"symbol": "ULVR", "exchange": "XLON"},
     "AZN": {"symbol": "AZN", "exchange": "XLON"},
 }
+
+
+# ============================================================
+# CREAZIONE GRUPPI
+# ============================================================
+
+SYMBOL_NAMES = list(SYMBOLS.keys())
+
+SYMBOL_GROUPS = [
+    SYMBOL_NAMES[index:index + MAX_SYMBOLS_PER_GROUP]
+    for index in range(
+        0,
+        len(SYMBOL_NAMES),
+        MAX_SYMBOLS_PER_GROUP,
+    )
+]
 
 
 # ============================================================
@@ -146,6 +204,9 @@ def home():
         "service": "bot-trading",
         "time_utc": datetime.now(timezone.utc).isoformat(),
         "symbols": len(SYMBOLS),
+        "groups": len(SYMBOL_GROUPS),
+        "symbols_per_group": MAX_SYMBOLS_PER_GROUP,
+        "group_interval_seconds": GROUP_INTERVAL_SECONDS,
         "interval": INTERVAL,
         "dry_run": DRY_RUN,
     })
@@ -173,20 +234,29 @@ def log(message):
 # ============================================================
 
 def telegram_configured():
-    return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+    return bool(
+        TELEGRAM_BOT_TOKEN
+        and TELEGRAM_CHAT_ID
+    )
 
 
 def send_telegram(text):
     """
-    Invia un messaggio Telegram e registra sempre la risposta.
-    Non stampa mai il token.
+    Invia un messaggio Telegram.
+    Il token non viene mai stampato nei log.
     """
 
     if not telegram_configured():
-        log("[TELEGRAM] Configurazione incompleta: token o chat_id mancanti")
+        log(
+            "[TELEGRAM] Configurazione incompleta: "
+            "token o chat_id mancanti"
+        )
         return False
 
-    url = f"{TELEGRAM_URL}/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = (
+        f"{TELEGRAM_URL}/bot"
+        f"{TELEGRAM_BOT_TOKEN}/sendMessage"
+    )
 
     try:
         response = requests.post(
@@ -203,49 +273,74 @@ def send_telegram(text):
             f"response={response.text[:500]}"
         )
 
-        if response.ok:
-            return True
+        return response.ok
 
+    except requests.RequestException as exc:
+        log(
+            "[TELEGRAM] Errore di rete durante l'invio: "
+            f"{repr(exc)}"
+        )
         return False
 
     except Exception as exc:
-        log(f"[TELEGRAM] eccezione durante l'invio: {repr(exc)}")
+        log(
+            "[TELEGRAM] Errore imprevisto durante l'invio: "
+            f"{repr(exc)}"
+        )
         return False
 
 
 def send_startup_test():
     """
-    Questo messaggio deve arrivare a prescindere dai dati di mercato.
-    Serve a verificare subito che Render legga le variabili Telegram.
+    Messaggio di conferma inviato prima dell'analisi dei titoli.
     """
 
     log(
-        "[CHECK] "
-        f"TWELVE_DATA_API_KEY presente: {bool(TWELVE_DATA_API_KEY)}"
+        "[CHECK] TWELVE_DATA_API_KEY presente: "
+        f"{bool(TWELVE_DATA_API_KEY)}"
     )
+
     log(
-        "[CHECK] "
-        f"TELEGRAM_BOT_TOKEN presente: {bool(TELEGRAM_BOT_TOKEN)}"
+        "[CHECK] TELEGRAM_BOT_TOKEN presente: "
+        f"{bool(TELEGRAM_BOT_TOKEN)}"
     )
+
     log(
-        "[CHECK] "
-        f"TELEGRAM_CHAT_ID presente: {bool(TELEGRAM_CHAT_ID)}"
+        "[CHECK] TELEGRAM_CHAT_ID presente: "
+        f"{bool(TELEGRAM_CHAT_ID)}"
     )
 
     if not telegram_configured():
-        log("[CHECK] Telegram NON configurato: messaggio non inviato")
+        log(
+            "[CHECK] Telegram non configurato: "
+            "messaggio di avvio non inviato"
+        )
         return False
 
-    text = (
+    message = (
         "✅ Bot avviato correttamente su Render\n\n"
-        f"Intervallo: {INTERVAL}\n"
         f"Titoli configurati: {len(SYMBOLS)}\n"
-        f"Modalità test: {'ON' if DRY_RUN else 'OFF'}\n"
-        "Ora inizio la scansione."
+        f"Gruppi: {len(SYMBOL_GROUPS)}\n"
+        f"Titoli per gruppo: {MAX_SYMBOLS_PER_GROUP}\n"
+        f"Timeframe: {INTERVAL}\n"
+        f"VWAP bands: ±{VWAP_BAND_MULTIPLIER} deviazioni standard\n"
+        f"Modalità test: {'ON' if DRY_RUN else 'OFF'}\n\n"
+        "Strategie attive:\n"
+        "• Trend EMA 200 + VWAP + Stoch RSI\n"
+        "• Ritracciamento bande VWAP\n\n"
+        "Inizio scansione."
     )
 
-    log("[CHECK] Invio messaggio di conferma Telegram...")
-    return send_telegram(text)
+    log("[CHECK] Invio messaggio di avvio Telegram...")
+    return send_telegram(message)
+
+
+# ============================================================
+# ECCEZIONE RATE LIMIT
+# ============================================================
+
+class TwelveDataRateLimitError(Exception):
+    pass
 
 
 # ============================================================
@@ -254,14 +349,14 @@ def send_startup_test():
 
 def get_time_series(display_name, config):
     """
-    Richiede le candele di un singolo titolo.
+    Scarica le candele di un singolo titolo.
 
-    La richiesta usa:
-      symbol=SAP
-      exchange=XETR
+    La richiesta utilizza:
+        symbol=AMD
+        exchange=NASDAQ
 
     e non:
-      symbol=SAP:XETRA
+        symbol=AMD:NASDAQ
     """
 
     if not TWELVE_DATA_API_KEY:
@@ -273,8 +368,10 @@ def get_time_series(display_name, config):
         "exchange": config["exchange"],
         "interval": INTERVAL,
         "outputsize": OUTPUTSIZE,
-        "apikey": TWELVE_DATA_API_KEY,
+        "timezone": "Exchange",
+        "prepost": "false",
         "format": "JSON",
+        "apikey": TWELVE_DATA_API_KEY,
     }
 
     try:
@@ -286,23 +383,44 @@ def get_time_series(display_name, config):
 
         try:
             payload = response.json()
-        except Exception:
+
+        except ValueError:
             log(
                 f"[DEBUG API] Risposta non JSON per {display_name}: "
                 f"HTTP {response.status_code} "
-                f"{response.text[:300]}"
+                f"{response.text[:500]}"
             )
             return None
 
-        # Twelve Data può restituire errori nel JSON anche con una risposta HTTP.
-        if response.status_code != 200 or payload.get("status") == "error":
+        message = str(payload.get("message", ""))
+
+        is_rate_limited = (
+            response.status_code == 429
+            or payload.get("code") == 429
+            or "run out of API credits" in message.lower()
+            or "current limit" in message.lower()
+        )
+
+        if is_rate_limited:
+            log(
+                f"[DEBUG API] Limite API raggiunto durante "
+                f"l'analisi di {display_name}: {payload}"
+            )
+            raise TwelveDataRateLimitError(
+                "Limite API Twelve Data raggiunto"
+            )
+
+        if (
+            response.status_code != 200
+            or payload.get("status") == "error"
+        ):
             log(
                 f"[DEBUG API] Errore per {display_name}: "
                 f"HTTP {response.status_code} "
                 f"{payload}"
             )
 
-            if SEND_ERROR_MESSAGES:
+            if SEND_API_ERROR_MESSAGES:
                 send_telegram(
                     f"⚠️ Errore dati per {display_name}\n"
                     f"{str(payload)[:800]}"
@@ -321,30 +439,49 @@ def get_time_series(display_name, config):
 
         df = pd.DataFrame(values)
 
-        required_columns = ["datetime", "open", "high", "low", "close"]
+        required_columns = [
+            "datetime",
+            "open",
+            "high",
+            "low",
+            "close",
+        ]
 
-        for column in required_columns:
-            if column not in df.columns:
-                log(
-                    f"[DEBUG API] Colonna {column} mancante per "
-                    f"{display_name}: {df.columns.tolist()}"
-                )
-                return None
+        missing_columns = [
+            column
+            for column in required_columns
+            if column not in df.columns
+        ]
 
-        for column in ["open", "high", "low", "close"]:
-            df[column] = pd.to_numeric(df[column], errors="coerce")
+        if missing_columns:
+            log(
+                f"[DEBUG API] Colonne mancanti per {display_name}: "
+                f"{missing_columns}"
+            )
+            return None
+
+        for column in [
+            "open",
+            "high",
+            "low",
+            "close",
+        ]:
+            df[column] = pd.to_numeric(
+                df[column],
+                errors="coerce",
+            )
 
         if "volume" in df.columns:
             df["volume"] = pd.to_numeric(
                 df["volume"],
-                errors="coerce"
-            ).fillna(0)
+                errors="coerce",
+            ).fillna(0.0)
         else:
             df["volume"] = 0.0
 
         df["datetime"] = pd.to_datetime(
             df["datetime"],
-            errors="coerce"
+            errors="coerce",
         )
 
         df = df.dropna(
@@ -357,27 +494,37 @@ def get_time_series(display_name, config):
             ]
         )
 
-        # Twelve Data spesso restituisce i dati dal più recente
-        # al più vecchio: li ordiniamo dal più vecchio al più recente.
-        df = df.sort_values("datetime").reset_index(drop=True)
+        df = df.sort_values(
+            "datetime",
+            ascending=True,
+        ).reset_index(drop=True)
 
-        if len(df) < 50:
+        if USE_ONLY_CLOSED_CANDLES and len(df) > 1:
+            df = df.iloc[:-1].copy()
+
+        if len(df) < 220:
             log(
                 f"[DEBUG API] Dati insufficienti per {display_name}: "
-                f"{len(df)} candele"
+                f"{len(df)} candele disponibili"
             )
             return None
 
         log(
-            f"[API OK] {display_name} "
+            f"[API OK] {display_name}: "
             f"{len(df)} candele ricevute "
             f"({config['symbol']} / {config['exchange']})"
         )
 
         return df
 
+    except TwelveDataRateLimitError:
+        raise
+
     except requests.RequestException as exc:
-        log(f"[DEBUG API] Errore di rete per {display_name}: {repr(exc)}")
+        log(
+            f"[DEBUG API] Errore di rete per {display_name}: "
+            f"{repr(exc)}"
+        )
         return None
 
     except Exception as exc:
@@ -395,24 +542,29 @@ def get_time_series(display_name, config):
 def calculate_rsi(series, period=14):
     delta = series.diff()
 
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    gains = delta.clip(lower=0)
+    losses = -delta.clip(upper=0)
 
-    average_gain = gain.ewm(
+    average_gain = gains.ewm(
         alpha=1 / period,
         min_periods=period,
         adjust=False,
     ).mean()
 
-    average_loss = loss.ewm(
+    average_loss = losses.ewm(
         alpha=1 / period,
         min_periods=period,
         adjust=False,
     ).mean()
 
-    rs = average_gain / average_loss.replace(0, np.nan)
+    relative_strength = (
+        average_gain
+        / average_loss.replace(0, np.nan)
+    )
 
-    rsi = 100 - (100 / (1 + rs))
+    rsi = 100 - (
+        100 / (1 + relative_strength)
+    )
 
     return rsi
 
@@ -421,177 +573,387 @@ def calculate_stoch_rsi(
     close,
     rsi_period=14,
     stoch_period=14,
-    smooth_k=3,
+    smooth_period=3,
 ):
-    rsi = calculate_rsi(close, rsi_period)
+    rsi = calculate_rsi(
+        close,
+        period=rsi_period,
+    )
 
-    lowest_rsi = rsi.rolling(stoch_period).min()
-    highest_rsi = rsi.rolling(stoch_period).max()
+    lowest_rsi = rsi.rolling(
+        window=stoch_period
+    ).min()
 
-    denominator = (highest_rsi - lowest_rsi).replace(0, np.nan)
+    highest_rsi = rsi.rolling(
+        window=stoch_period
+    ).max()
 
-    stoch_rsi = (rsi - lowest_rsi) / denominator * 100
+    denominator = (
+        highest_rsi - lowest_rsi
+    ).replace(0, np.nan)
 
-    k = stoch_rsi.rolling(smooth_k).mean()
+    stoch_rsi = (
+        (rsi - lowest_rsi)
+        / denominator
+        * 100
+    )
 
-    return k
+    smoothed_stoch_rsi = stoch_rsi.rolling(
+        window=smooth_period
+    ).mean()
+
+    return smoothed_stoch_rsi
 
 
 def calculate_indicators(df):
+    """
+    Calcola:
+
+    - EMA 200
+    - VWAP giornaliera
+    - banda VWAP superiore
+    - banda VWAP inferiore
+    - Stoch RSI
+
+    La VWAP viene azzerata a ogni nuova data di sessione.
+    """
+
     df = df.copy()
 
+    df["datetime"] = pd.to_datetime(
+        df["datetime"],
+        errors="coerce",
+    )
+
+    # --------------------------------------------------------
     # EMA 200
+    # --------------------------------------------------------
+
     df["ema200"] = df["close"].ewm(
         span=200,
         adjust=False,
         min_periods=200,
     ).mean()
 
-    # VWAP cumulativa della sessione.
-    # Per questa prova usiamo una VWAP cumulativa sulle candele
-    # restituite dall'API.
-    typical_price = (
-        df["high"] + df["low"] + df["close"]
-    ) / 3
+    # --------------------------------------------------------
+    # Prezzo tipico
+    # --------------------------------------------------------
 
-    cumulative_volume = df["volume"].cumsum()
+    df["typical_price"] = (
+        df["high"]
+        + df["low"]
+        + df["close"]
+    ) / 3.0
 
-    cumulative_value = (
-        typical_price * df["volume"]
-    ).cumsum()
+    # --------------------------------------------------------
+    # VWAP giornaliera
+    # --------------------------------------------------------
 
-    df["vwap"] = cumulative_value / cumulative_volume.replace(
+    # Twelve Data restituisce l'orario in Exchange timezone.
+    # Raggruppare per data quindi resetta la VWAP a ogni sessione.
+    df["session_date"] = df["datetime"].dt.date
+
+    df["price_volume"] = (
+        df["typical_price"]
+        * df["volume"]
+    )
+
+    df["price_squared_volume"] = (
+        df["typical_price"] ** 2
+        * df["volume"]
+    )
+
+    grouped_volume = df.groupby(
+        "session_date",
+        sort=False,
+    )["volume"]
+
+    grouped_price_volume = df.groupby(
+        "session_date",
+        sort=False,
+    )["price_volume"]
+
+    grouped_price_squared_volume = df.groupby(
+        "session_date",
+        sort=False,
+    )["price_squared_volume"]
+
+    df["cumulative_volume"] = (
+        grouped_volume.cumsum()
+    )
+
+    df["cumulative_price_volume"] = (
+        grouped_price_volume.cumsum()
+    )
+
+    df["cumulative_price_squared_volume"] = (
+        grouped_price_squared_volume.cumsum()
+    )
+
+    safe_volume = df["cumulative_volume"].replace(
         0,
         np.nan,
     )
 
-    # Stoch RSI in percentuale: 0-100
-    df["stoch_rsi"] = calculate_stoch_rsi(df["close"])
+    df["vwap"] = (
+        df["cumulative_price_volume"]
+        / safe_volume
+    )
+
+    # Varianza ponderata dal volume:
+    # E[x²] - E[x]²
+    weighted_second_moment = (
+        df["cumulative_price_squared_volume"]
+        / safe_volume
+    )
+
+    variance = (
+        weighted_second_moment
+        - df["vwap"] ** 2
+    )
+
+    variance = variance.clip(lower=0)
+
+    df["vwap_std"] = np.sqrt(variance)
+
+    df["vwap_upper"] = (
+        df["vwap"]
+        + VWAP_BAND_MULTIPLIER
+        * df["vwap_std"]
+    )
+
+    df["vwap_lower"] = (
+        df["vwap"]
+        - VWAP_BAND_MULTIPLIER
+        * df["vwap_std"]
+    )
+
+    # --------------------------------------------------------
+    # Stoch RSI
+    # --------------------------------------------------------
+
+    df["stoch_rsi"] = calculate_stoch_rsi(
+        df["close"]
+    )
 
     return df
 
 
 # ============================================================
-# LOGICA SEGNALI
+# LOGICA DEI SEGNALI
 # ============================================================
 
 def evaluate_signal(df):
     """
-    Strategia di prova:
+    Restituisce:
 
-    BUY:
-      - prezzo sopra EMA 200
-      - prezzo sopra VWAP
-      - Stoch RSI <= 20
-      - Stoch RSI della candela precedente <= 20
-      - Stoch RSI attuale maggiore di quello precedente
+        signal, strategy, details
 
-    SELL:
-      - prezzo sotto EMA 200
-      - prezzo sotto VWAP
-      - Stoch RSI >= 80
-      - Stoch RSI della candela precedente >= 80
-      - Stoch RSI attuale minore di quello precedente
+    Esempi:
 
-    Questa è una versione di test. Prima verifichiamo che dati,
-    indicatori e Telegram funzionino.
+        BUY, TREND, details
+        SELL, RETRACEMENT, details
+        None, None, None
     """
 
     if len(df) < 3:
-        return None, None
+        return None, None, None
 
-    last = df.iloc[-1]
     previous = df.iloc[-2]
+    current = df.iloc[-1]
 
-    required = [
+    required_columns = [
+        "datetime",
         "close",
         "ema200",
         "vwap",
+        "vwap_upper",
+        "vwap_lower",
         "stoch_rsi",
     ]
 
-    for column in required:
-        if pd.isna(last[column]) or pd.isna(previous[column]):
-            return None, None
+    for column in required_columns:
+        if pd.isna(previous[column]):
+            return None, None, None
 
-    close = float(last["close"])
-    ema200 = float(last["ema200"])
-    vwap = float(last["vwap"])
-    stoch = float(last["stoch_rsi"])
+        if pd.isna(current[column]):
+            return None, None, None
+
+    previous_close = float(previous["close"])
+    current_close = float(current["close"])
+
+    previous_ema = float(previous["ema200"])
+    current_ema = float(current["ema200"])
+
+    previous_vwap = float(previous["vwap"])
+    current_vwap = float(current["vwap"])
+
+    previous_upper = float(previous["vwap_upper"])
+    current_upper = float(current["vwap_upper"])
+
+    previous_lower = float(previous["vwap_lower"])
+    current_lower = float(current["vwap_lower"])
+
     previous_stoch = float(previous["stoch_rsi"])
+    current_stoch = float(current["stoch_rsi"])
 
     details = {
-        "time": str(last["datetime"]),
-        "close": close,
-        "ema200": ema200,
-        "vwap": vwap,
-        "stoch_rsi": stoch,
+        "candle_time": str(current["datetime"]),
+        "close": current_close,
+        "ema200": current_ema,
+        "vwap": current_vwap,
+        "vwap_upper": current_upper,
+        "vwap_lower": current_lower,
+        "vwap_std": float(current["vwap_std"]),
+        "stoch_rsi": current_stoch,
         "previous_stoch_rsi": previous_stoch,
     }
 
-    buy_condition = (
-        close > ema200
-        and close > vwap
-        and stoch <= 20
-        and previous_stoch <= 20
-        and stoch > previous_stoch
+    # ========================================================
+    # STRATEGIA RITRACCIAMENTO
+    # ========================================================
+    #
+    # SELL:
+    # - candela precedente sopra banda superiore
+    # - candela attuale rientra nella banda
+    # - Stoch RSI precedente ipercomprato
+    # - Stoch RSI in discesa
+    #
+    # BUY:
+    # - candela precedente sotto banda inferiore
+    # - candela attuale rientra nella banda
+    # - Stoch RSI precedente ipervenduto
+    # - Stoch RSI in salita
+    #
+    # È una conferma più prudente rispetto a vendere
+    # semplicemente perché il prezzo supera una banda.
+
+    retracement_sell = (
+        previous_close > previous_upper
+        and current_close <= current_upper
+        and previous_stoch >= STOCH_OVERBOUGHT
+        and current_stoch < previous_stoch
     )
 
-    sell_condition = (
-        close < ema200
-        and close < vwap
-        and stoch >= 80
-        and previous_stoch >= 80
-        and stoch < previous_stoch
+    retracement_buy = (
+        previous_close < previous_lower
+        and current_close >= current_lower
+        and previous_stoch <= STOCH_OVERSOLD
+        and current_stoch > previous_stoch
     )
 
-    if buy_condition:
-        return "BUY", details
+    if retracement_sell:
+        return "SELL", "RETRACEMENT", details
 
-    if sell_condition:
-        return "SELL", details
+    if retracement_buy:
+        return "BUY", "RETRACEMENT", details
 
-    return None, details
+    # ========================================================
+    # STRATEGIA TREND
+    # ========================================================
+    #
+    # BUY:
+    # - prezzo sopra EMA 200
+    # - prezzo sopra VWAP
+    # - Stoch RSI precedente in oversold
+    # - Stoch RSI in risalita
+    #
+    # SELL:
+    # - prezzo sotto EMA 200
+    # - prezzo sotto VWAP
+    # - Stoch RSI precedente in overbought
+    # - Stoch RSI in discesa
+
+    trend_buy = (
+        current_close > current_ema
+        and current_close > current_vwap
+        and previous_stoch <= STOCH_OVERSOLD
+        and current_stoch > previous_stoch
+    )
+
+    trend_sell = (
+        current_close < current_ema
+        and current_close < current_vwap
+        and previous_stoch >= STOCH_OVERBOUGHT
+        and current_stoch < previous_stoch
+    )
+
+    if trend_buy:
+        return "BUY", "TREND", details
+
+    if trend_sell:
+        return "SELL", "TREND", details
+
+    return None, None, details
 
 
 # ============================================================
-# CICLO DI SCANSIONE
+# MESSAGGI
 # ============================================================
 
-last_sent_signal = {}
-last_scan_time = None
+def format_signal_message(
+    display_name,
+    signal,
+    strategy,
+    details,
+):
+    if signal == "BUY":
+        emoji = "🟢"
+    else:
+        emoji = "🔴"
 
-
-def format_signal_message(display_name, signal, details):
-    emoji = "🟢" if signal == "BUY" else "🔴"
+    if strategy == "TREND":
+        strategy_label = "TREND"
+    else:
+        strategy_label = "RITRACCIAMENTO"
 
     return (
-        f"{emoji} SEGNALE {signal}\n\n"
+        f"{emoji} SEGNALE {signal} - {strategy_label}\n\n"
         f"Titolo: {display_name}\n"
         f"Timeframe: {INTERVAL}\n"
-        f"Data candela: {details['time']}\n\n"
+        f"Candela: {details['candle_time']}\n\n"
         f"Prezzo: {details['close']:.4f}\n"
         f"EMA 200: {details['ema200']:.4f}\n"
         f"VWAP: {details['vwap']:.4f}\n"
-        f"Stoch RSI: {details['stoch_rsi']:.2f}\n"
+        f"Banda superiore: "
+        f"{details['vwap_upper']:.4f}\n"
+        f"Banda inferiore: "
+        f"{details['vwap_lower']:.4f}\n"
+        f"Stoch RSI: "
+        f"{details['stoch_rsi']:.2f}\n\n"
+        "⚠️ Segnale informativo: verificare sempre "
+        "grafico, liquidità e contesto prima di qualsiasi decisione."
     )
 
 
-def scan_once():
-    global last_scan_time
+# ============================================================
+# SCANSIONE DI UN GRUPPO
+# ============================================================
 
-    last_scan_time = datetime.now(timezone.utc)
+last_signal_key = {}
 
+
+def scan_group(group_number, group_symbols):
     log("=" * 70)
-    log(f"[SCAN] Inizio scansione di {len(SYMBOLS)} titoli")
-    log(f"[SCAN] Timeframe: {INTERVAL}")
+    log(
+        f"[GROUP] Avvio gruppo {group_number + 1}/"
+        f"{len(SYMBOL_GROUPS)}"
+    )
+    log(
+        f"[GROUP] Titoli: {', '.join(group_symbols)}"
+    )
 
     valid_data_count = 0
     signal_count = 0
 
-    for display_name, config in SYMBOLS.items():
+    for position, display_name in enumerate(group_symbols):
+        config = SYMBOLS[display_name]
+
         try:
-            df = get_time_series(display_name, config)
+            df = get_time_series(
+                display_name,
+                config,
+            )
 
             if df is None:
                 continue
@@ -600,12 +962,12 @@ def scan_once():
 
             df = calculate_indicators(df)
 
-            signal, details = evaluate_signal(df)
+            signal, strategy, details = evaluate_signal(df)
 
             if details is None:
                 log(
-                    f"[INDICATORI] {display_name}: "
-                    "dati insufficienti per gli indicatori"
+                    f"[CHECK] {display_name}: "
+                    "indicatori non disponibili"
                 )
                 continue
 
@@ -614,8 +976,11 @@ def scan_once():
                 f"close={details['close']:.4f} | "
                 f"EMA200={details['ema200']:.4f} | "
                 f"VWAP={details['vwap']:.4f} | "
+                f"upper={details['vwap_upper']:.4f} | "
+                f"lower={details['vwap_lower']:.4f} | "
                 f"StochRSI={details['stoch_rsi']:.2f} | "
-                f"signal={signal or 'NESSUNO'}"
+                f"signal={signal or 'NESSUNO'} | "
+                f"strategy={strategy or '-'}"
             )
 
             if signal is None:
@@ -623,85 +988,143 @@ def scan_once():
 
             signal_count += 1
 
-            signal_key = f"{display_name}:{signal}"
-            previous_signal = last_sent_signal.get(display_name)
+            signal_key = (
+                f"{display_name}|"
+                f"{strategy}|"
+                f"{signal}|"
+                f"{details['candle_time']}"
+            )
 
-            # Evita di inviare lo stesso segnale a ogni ciclo.
-            if previous_signal == signal:
+            if last_signal_key.get(display_name) == signal_key:
                 log(
-                    f"[SIGNAL] {display_name}: {signal} già inviato; "
-                    "nessun duplicato"
+                    f"[SIGNAL] {display_name}: "
+                    "segnale già inviato per questa candela"
                 )
                 continue
 
             message = format_signal_message(
                 display_name,
                 signal,
+                strategy,
                 details,
             )
 
             if DRY_RUN:
                 log(
-                    f"[DRY RUN] Segnale non inviato a Telegram:\n"
+                    f"[DRY RUN] Segnale non inviato:\n"
                     f"{message}"
+                )
+
+                last_signal_key[display_name] = signal_key
+                continue
+
+            log(
+                f"[TELEGRAM] Invio segnale {signal} "
+                f"{strategy} per {display_name}"
+            )
+
+            sent = send_telegram(message)
+
+            if sent:
+                last_signal_key[display_name] = signal_key
+
+                log(
+                    f"[TELEGRAM] Segnale inviato per "
+                    f"{display_name}"
                 )
             else:
                 log(
-                    f"[TELEGRAM] Invio segnale {signal} "
-                    f"per {display_name}"
+                    f"[TELEGRAM] Invio fallito per "
+                    f"{display_name}"
                 )
 
-                sent = send_telegram(message)
-
-                if sent:
-                    last_sent_signal[display_name] = signal
-                    log(
-                        f"[TELEGRAM] Segnale inviato per {display_name}"
-                    )
-                else:
-                    log(
-                        f"[TELEGRAM] Invio fallito per {display_name}"
-                    )
+        except TwelveDataRateLimitError:
+            log(
+                "[RATE LIMIT] Limite Twelve Data raggiunto. "
+                "Interrompo il gruppo attuale e riprenderò "
+                "con il gruppo successivo."
+            )
+            break
 
         except Exception as exc:
             log(
-                f"[SCAN] Errore non gestito su {display_name}: "
-                f"{repr(exc)}"
+                f"[GROUP] Errore non gestito su "
+                f"{display_name}: {repr(exc)}"
             )
 
+        finally:
+            # Pausa tra le richieste API.
+            # Non viene applicata dopo l'ultimo titolo del gruppo.
+            if position < len(group_symbols) - 1:
+                time.sleep(REQUEST_DELAY_SECONDS)
+
     log(
-        f"[SCAN] Fine scansione | "
+        f"[GROUP] Fine gruppo {group_number + 1} | "
         f"dati validi={valid_data_count} | "
-        f"segnali={signal_count}"
+        f"segnali trovati={signal_count}"
     )
     log("=" * 70)
 
 
+# ============================================================
+# CICLO ROTANTE
+# ============================================================
+
 def scanner_loop():
     log("[BOT] Thread scanner avviato")
+    log(
+        f"[BOT] {len(SYMBOLS)} titoli divisi in "
+        f"{len(SYMBOL_GROUPS)} gruppi"
+    )
+    log(
+        f"[BOT] Ogni gruppo contiene al massimo "
+        f"{MAX_SYMBOLS_PER_GROUP} titoli"
+    )
+    log(
+        f"[BOT] Intervallo tra gruppi: "
+        f"{GROUP_INTERVAL_SECONDS} secondi"
+    )
+    log(
+        f"[BOT] Pausa tra richieste: "
+        f"{REQUEST_DELAY_SECONDS} secondi"
+    )
 
-    # Prima prova: deve partire subito, senza aspettare 15 minuti.
-    try:
-        scan_once()
-    except Exception as exc:
-        log(f"[BOT] Errore nella prima scansione: {repr(exc)}")
+    group_index = 0
 
     while True:
-        try:
-            log(
-                f"[BOT] Attendo {SCAN_SECONDS} secondi "
-                "prima della prossima scansione"
-            )
-            time.sleep(SCAN_SECONDS)
+        cycle_start = time.monotonic()
 
-            scan_once()
+        current_group = SYMBOL_GROUPS[group_index]
+
+        try:
+            scan_group(
+                group_number=group_index,
+                group_symbols=current_group,
+            )
 
         except Exception as exc:
             log(
-                f"[BOT] Errore nel ciclo principale: "
-                f"{repr(exc)}"
+                f"[BOT] Errore grave nel gruppo "
+                f"{group_index + 1}: {repr(exc)}"
             )
-            time.sleep(60)
+
+        group_index = (
+            group_index + 1
+        ) % len(SYMBOL_GROUPS)
+
+        elapsed = time.monotonic() - cycle_start
+
+        wait_seconds = max(
+            1,
+            GROUP_INTERVAL_SECONDS - elapsed,
+        )
+
+        log(
+            f"[BOT] Prossimo gruppo tra "
+            f"{wait_seconds:.0f} secondi"
+        )
+
+        time.sleep(wait_seconds)
 
 
 # ============================================================
@@ -709,28 +1132,27 @@ def scanner_loop():
 # ============================================================
 
 def start_background_bot():
-    thread = threading.Thread(
+    scanner_thread = threading.Thread(
         target=scanner_loop,
         name="scanner-thread",
         daemon=True,
     )
-    thread.start()
+
+    scanner_thread.start()
 
 
 if __name__ == "__main__":
     log("[BOT] Avvio applicazione")
 
-    # Questo deve inviare Telegram prima della scansione.
+    # Controllo Telegram indipendente dall'API di mercato.
     send_startup_test()
 
-    # Avvio scanner in background.
+    # Avvio del ciclo rotante in background.
     start_background_bot()
 
-    # Flask mantiene vivo il Web Service di Render.
+    # Render mantiene attivo il Web Service tramite Flask.
     app.run(
         host="0.0.0.0",
         port=PORT,
         threaded=True,
     )
-
-
