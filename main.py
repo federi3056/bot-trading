@@ -1,14 +1,19 @@
+print("1. Avvio script...", flush=True)
 import pandas as pd
+print("2. Pandas importato", flush=True)
 import time
 from datetime import datetime
 import pytz
+print("3. Pytz importato", flush=True)
 from flask import Flask
 from threading import Thread
 import os
 import requests
+print("4. Tutti gli import completati", flush=True)
 
 # --- INIZIALIZZAZIONE SERVER WEB PER RENDER ---
 app = Flask('')
+print("5. Flask app creata", flush=True)
 
 @app.route('/')
 def home():
@@ -19,10 +24,11 @@ def run_web_server():
     app.run(host='0.0.0.0', port=port)
 
 # =========================================================================
-# 🔒 Le chiavi vengono lette dalle Environment Variables di Render
+# ðŸ”’ Le chiavi vengono lette dalle Environment Variables di Render
 TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+print("6. Variabili ambiente lette", flush=True)
 # =========================================================================
 
 # --- CONFIGURAZIONE ORARIA (Fuso Orario Italiano) ---
@@ -52,6 +58,8 @@ OUTPUTSIZE = 300  # servono almeno ~250-300 barre per una EMA_200 affidabile
 # --- GESTIONE CREDITI TWELVE DATA (piano free: 800/giorno, 8/minuto) ---
 # 30 ticker x 2 timeframe = 60 crediti a scansione -> max ~13 scansioni/giorno
 SCAN_INTERVAL_SECONDS = 4500  # ~75 minuti tra scansioni per restare sotto gli 800 crediti/giorno
+
+print("7. Configurazione completata, definizione funzioni...", flush=True)
 
 
 def is_market_time():
@@ -154,7 +162,7 @@ def get_batch_data(tickers, interval):
             else:
                 print(f"[DEBUG API] Rifiuto per {tickers[0]}: {data}", flush=True)
         else:
-            # Con più simboli la risposta è un dizionario per ticker
+            # Con piÃ¹ simboli la risposta Ã¨ un dizionario per ticker
             # (la chiave corrisponde esattamente al simbolo passato, es. "SAP:XETRA")
             for t in tickers:
                 entry = data.get(t)
@@ -207,7 +215,7 @@ def scan_all_markets():
         print(f"[{datetime.now(LOCAL_TZ).strftime('%H:%M:%S')}] Mercati chiusi. Standby...", flush=True)
         return
 
-    print(f"\n--- 📈 Scansione Intraday Avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---", flush=True)
+    print(f"\n--- ðŸ“ˆ Scansione Intraday Avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---", flush=True)
 
     # 2 chiamate totali invece di 60 (una per timeframe, con tutti i ticker in batch)
     data_15m = get_batch_data(TICKERS, '15m')
@@ -226,7 +234,7 @@ def scan_all_markets():
 
         if sig_15m == "BUY" and sig_30m == "BUY":
             send_telegram_message(
-                f"🎯 🟢 **SEGNALE BUY INTRADAY** 🟢 🎯\n\n"
+                f"ðŸŽ¯ ðŸŸ¢ **SEGNALE BUY INTRADAY** ðŸŸ¢ ðŸŽ¯\n\n"
                 f"**Titolo:** `{label}`\n"
                 f"**Analisi:** Confluenza direzionale su **15m** e **30m**.\n"
                 f"1. Stoch RSI uscito da ipervenduto ({BUY_LOW}-{BUY_HIGH})\n"
@@ -235,7 +243,7 @@ def scan_all_markets():
             )
         elif sig_15m == "SELL" and sig_30m == "SELL":
             send_telegram_message(
-                f"🎯 🔴 **SEGNALE SELL INTRADAY** 🔴 🎯\n\n"
+                f"ðŸŽ¯ ðŸ”´ **SEGNALE SELL INTRADAY** ðŸ”´ ðŸŽ¯\n\n"
                 f"**Titolo:** `{label}`\n"
                 f"**Analisi:** Confluenza short su **15m** e **30m**.\n"
                 f"1. Stoch RSI uscito da ipercomprato ({SELL_LOW}-{SELL_HIGH})\n"
@@ -247,9 +255,9 @@ def scan_all_markets():
 
 
 def bot_loop():
-    print("Inizializzazione bot...", flush=True)
-    send_telegram_message("🚀 **Bot Intraday Online!** 15 USA + 15 EU monitorati, EMA_200 attiva.")
-    print("Bot in esecuzione...", flush=True)
+    print("8. Inizializzazione bot...", flush=True)
+    send_telegram_message("ðŸš€ **Bot Intraday Online!** 15 USA + 15 EU monitorati, EMA_200 attiva.")
+    print("9. Bot in esecuzione...", flush=True)
 
     while True:
         scan_all_markets()
@@ -257,6 +265,8 @@ def bot_loop():
 
 
 if __name__ == "__main__":
+    print("10. Entrato nel blocco main", flush=True)
     t_web = Thread(target=run_web_server)
     t_web.start()
+    print("11. Thread web avviato, chiamo bot_loop", flush=True)
     bot_loop()
