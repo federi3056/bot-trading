@@ -1,19 +1,14 @@
-print("1. Avvio script...", flush=True)
 import pandas as pd
-print("2. Pandas importato", flush=True)
 import time
 from datetime import datetime
 import pytz
-print("3. Pytz importato", flush=True)
 from flask import Flask
 from threading import Thread
 import os
 import requests
-print("4. Tutti gli import completati", flush=True)
 
 # --- INIZIALIZZAZIONE SERVER WEB PER RENDER ---
 app = Flask('')
-print("5. Flask app creata", flush=True)
 
 @app.route('/')
 def home():
@@ -28,7 +23,6 @@ def run_web_server():
 TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-print("6. Variabili ambiente lette", flush=True)
 # =========================================================================
 
 # --- CONFIGURAZIONE ORARIA (Fuso Orario Italiano) ---
@@ -55,11 +49,14 @@ SELL_LOW, SELL_HIGH = 85, 100
 EMA_PERIOD = 200
 OUTPUTSIZE = 300  # servono almeno ~250-300 barre per una EMA_200 affidabile
 
-# --- GESTIONE CREDITI TWELVE DATA (piano free: 800/giorno, 8/minuto) ---
+# --- GESTIONE RATE LIMIT TWELVE DATA (piano free: 8 crediti/min, 800/giorno) ---
+# Ogni simbolo in una richiesta batch consuma 1 credito, quindi dividiamo
+# i 30 ticker in gruppi da massimo 8 per rispettare il limite al minuto.
+CHUNK_SIZE = 8
+SECONDS_BETWEEN_CHUNKS = 65  # margine di sicurezza sopra il reset di 60s
+
 # 30 ticker x 2 timeframe = 60 crediti a scansione -> max ~13 scansioni/giorno
 SCAN_INTERVAL_SECONDS = 4500  # ~75 minuti tra scansioni per restare sotto gli 800 crediti/giorno
-
-print("7. Configurazione completata, definizione funzioni...", flush=True)
 
 
 def is_market_time():
@@ -131,48 +128,58 @@ def _parse_values(values):
     return df[['Close', 'High', 'Low', 'Volume']]
 
 
+def _chunk_list(lst, size):
+    """Divide una lista in sottoliste di massimo 'size' elementi."""
+    for i in range(0, len(lst), size):
+        yield lst[i:i + size]
+
+
 def get_batch_data(tickers, interval):
     """
-    Scarica i dati per TUTTI i ticker in un'unica chiamata HTTP
-    (risparmia sul rate limit di 8 chiamate/minuto).
-    I crediti consumati restano 1 per simbolo, ma con 1 sola richiesta.
-    Per i titoli europei usa il formato SIMBOLO:BORSA (es. SAP:XETRA).
+    Scarica i dati per i ticker richiesti, dividendo in gruppi da max
+    CHUNK_SIZE simboli per rispettare il limite di 8 crediti/minuto
+    del piano free di Twelve Data. Ogni simbolo consuma 1 credito,
+    anche dentro una richiesta batch.
     """
     tf_query = "15min" if interval == "15m" else "30min"
-    symbols_str = ",".join(tickers)
-    url = (
-        f"https://api.twelvedata.com/time_series"
-        f"?symbol={symbols_str}&interval={tf_query}&outputsize={OUTPUTSIZE}"
-        f"&apikey={TWELVE_DATA_API_KEY}"
-    )
-
     result = {t: None for t in tickers}
 
-    try:
-        response = requests.get(url, timeout=30)
-        if response.status_code != 200:
-            print(f"[DEBUG API] Status Code Errato: {response.status_code}", flush=True)
-            return result
+    chunks = list(_chunk_list(tickers, CHUNK_SIZE))
 
-        data = response.json()
+    for idx, chunk in enumerate(chunks):
+        symbols_str = ",".join(chunk)
+        url = (
+            f"https://api.twelvedata.com/time_series"
+            f"?symbol={symbols_str}&interval={tf_query}&outputsize={OUTPUTSIZE}"
+            f"&apikey={TWELVE_DATA_API_KEY}"
+        )
 
-        if len(tickers) == 1:
-            if "values" in data:
-                result[tickers[0]] = _parse_values(data["values"])
+        try:
+            response = requests.get(url, timeout=30)
+            if response.status_code != 200:
+                print(f"[DEBUG API] Status Code Errato ({tf_query}, gruppo {idx+1}/{len(chunks)}): {response.status_code}", flush=True)
             else:
-                print(f"[DEBUG API] Rifiuto per {tickers[0]}: {data}", flush=True)
-        else:
-            # Con piÃ¹ simboli la risposta Ã¨ un dizionario per ticker
-            # (la chiave corrisponde esattamente al simbolo passato, es. "SAP:XETRA")
-            for t in tickers:
-                entry = data.get(t)
-                if entry and "values" in entry:
-                    result[t] = _parse_values(entry["values"])
-                else:
-                    print(f"[DEBUG API] Nessun dato per {t}: {entry}", flush=True)
+                data = response.json()
 
-    except Exception as e:
-        print(f"[DEBUG ECCEZIONE] Errore batch: {e}", flush=True)
+                if len(chunk) == 1:
+                    if "values" in data:
+                        result[chunk[0]] = _parse_values(data["values"])
+                    else:
+                        print(f"[DEBUG API] Rifiuto per {chunk[0]}: {data}", flush=True)
+                else:
+                    for t in chunk:
+                        entry = data.get(t)
+                        if entry and "values" in entry:
+                            result[t] = _parse_values(entry["values"])
+                        else:
+                            print(f"[DEBUG API] Nessun dato per {t}: {entry}", flush=True)
+
+        except Exception as e:
+            print(f"[DEBUG ECCEZIONE] Errore batch gruppo {idx+1}: {e}", flush=True)
+
+        # Aspetta il reset del credito al minuto prima del prossimo gruppo
+        if idx < len(chunks) - 1:
+            time.sleep(SECONDS_BETWEEN_CHUNKS)
 
     return result
 
@@ -217,9 +224,8 @@ def scan_all_markets():
 
     print(f"\n--- ðŸ“ˆ Scansione Intraday Avviata: {datetime.now(LOCAL_TZ).strftime('%H:%M:%S')} ---", flush=True)
 
-    # 2 chiamate totali invece di 60 (una per timeframe, con tutti i ticker in batch)
     data_15m = get_batch_data(TICKERS, '15m')
-    time.sleep(3)  # piccola pausa di cortesia tra le due chiamate
+    time.sleep(SECONDS_BETWEEN_CHUNKS)  # margine anche tra i due timeframe
     data_30m = get_batch_data(TICKERS, '30m')
 
     conteggio_ok = 0
@@ -255,9 +261,9 @@ def scan_all_markets():
 
 
 def bot_loop():
-    print("8. Inizializzazione bot...", flush=True)
+    print("Inizializzazione bot...", flush=True)
     send_telegram_message("ðŸš€ **Bot Intraday Online!** 15 USA + 15 EU monitorati, EMA_200 attiva.")
-    print("9. Bot in esecuzione...", flush=True)
+    print("Bot in esecuzione...", flush=True)
 
     while True:
         scan_all_markets()
@@ -265,8 +271,6 @@ def bot_loop():
 
 
 if __name__ == "__main__":
-    print("10. Entrato nel blocco main", flush=True)
     t_web = Thread(target=run_web_server)
     t_web.start()
-    print("11. Thread web avviato, chiamo bot_loop", flush=True)
     bot_loop()
