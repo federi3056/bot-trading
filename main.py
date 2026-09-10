@@ -1,7 +1,8 @@
 import os
 import time
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, time as dt_time
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -21,23 +22,36 @@ TELEGRAM_URL = "https://api.telegram.org"
 INTERVAL = os.getenv("INTERVAL", "15min")
 OUTPUTSIZE = int(os.getenv("OUTPUTSIZE", "250"))
 
+# Fuso orario utilizzato per la programmazione delle sessioni.
+ROME_TIMEZONE = ZoneInfo("Europe/Rome")
+
+# Fasce operative in ora italiana:
+#
+# 09:00 - 15:30:
+# solo titoli europei
+#
+# 15:30 - 23:00:
+# solo titoli americani
+#
+# Fuori da queste fasce:
+# nessuna scansione
+EUROPE_SESSION_START = dt_time(9, 0)
+EUROPE_SESSION_END = dt_time(15, 30)
+
+USA_SESSION_START = dt_time(15, 30)
+USA_SESSION_END = dt_time(23, 0)
+
 # Un gruppo viene analizzato ogni 15 minuti.
-# Con 5 gruppi da 6 titoli:
-# 30 titoli / 6 per gruppo = 5 gruppi
-# 5 gruppi x 15 minuti = circa 75 minuti per completare il giro.
 GROUP_INTERVAL_SECONDS = int(
     os.getenv("GROUP_INTERVAL_SECONDS", "900")
 )
 
-# Sei richieste con 10 secondi di distanza restano sotto il limite
-# gratuito di 8 richieste al minuto.
+# Pausa tra le richieste API.
 REQUEST_DELAY_SECONDS = float(
     os.getenv("REQUEST_DELAY_SECONDS", "10")
 )
 
-# Il piano gratuito ha un limite giornaliero.
-# Questa configurazione produce circa:
-# 30 richieste ogni 75 minuti = circa 576 richieste al giorno.
+# Numero massimo di titoli per gruppo.
 MAX_SYMBOLS_PER_GROUP = int(
     os.getenv("MAX_SYMBOLS_PER_GROUP", "6")
 )
@@ -46,13 +60,11 @@ MAX_SYMBOLS_PER_GROUP = int(
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
 # Se true, dopo un errore API viene mandato anche un messaggio Telegram.
-# Lasciamo false per non riempire la chat di errori.
 SEND_API_ERROR_MESSAGES = (
     os.getenv("SEND_API_ERROR_MESSAGES", "false").lower() == "true"
 )
 
 # Se true, viene esclusa l'ultima candela ricevuta.
-# È più prudente perché l'ultima candela potrebbe essere ancora aperta.
 USE_ONLY_CLOSED_CANDLES = (
     os.getenv("USE_ONLY_CLOSED_CANDLES", "true").lower() == "true"
 )
@@ -62,7 +74,7 @@ VWAP_BAND_MULTIPLIER = float(
     os.getenv("VWAP_BAND_MULTIPLIER", "2.0")
 )
 
-# Strategia trend.
+# Soglie Stoch RSI.
 STOCH_OVERSOLD = float(
     os.getenv("STOCH_OVERSOLD", "20")
 )
@@ -175,19 +187,217 @@ SYMBOLS = {
 
 
 # ============================================================
-# CREAZIONE GRUPPI
+# CLASSIFICAZIONE DEI MERCATI
 # ============================================================
 
-SYMBOL_NAMES = list(SYMBOLS.keys())
+US_EXCHANGES = {
+    "NASDAQ",
+    "NYSE",
+}
 
-SYMBOL_GROUPS = [
-    SYMBOL_NAMES[index:index + MAX_SYMBOLS_PER_GROUP]
-    for index in range(
-        0,
-        len(SYMBOL_NAMES),
-        MAX_SYMBOLS_PER_GROUP,
+EUROPEAN_EXCHANGES = {
+    "XETR",
+    "XPAR",
+    "XAMS",
+    "XMIL",
+    "XLON",
+}
+
+
+def get_symbol_names_for_market(market_name):
+    """
+    Restituisce i titoli appartenenti al mercato richiesto.
+
+    market_name può essere:
+        EUROPE
+        USA
+    """
+
+    if market_name == "EUROPE":
+        exchanges = EUROPEAN_EXCHANGES
+
+    elif market_name == "USA":
+        exchanges = US_EXCHANGES
+
+    else:
+        return []
+
+    return [
+        display_name
+        for display_name, config in SYMBOLS.items()
+        if config["exchange"] in exchanges
+    ]
+
+
+def build_symbol_groups(symbol_names):
+    """
+    Divide una lista di titoli in gruppi.
+    """
+
+    return [
+        symbol_names[index:index + MAX_SYMBOLS_PER_GROUP]
+        for index in range(
+            0,
+            len(symbol_names),
+            MAX_SYMBOLS_PER_GROUP,
+        )
+    ]
+
+
+ALL_SYMBOL_NAMES = list(SYMBOLS.keys())
+ALL_SYMBOL_GROUPS = build_symbol_groups(ALL_SYMBOL_NAMES)
+
+
+# ============================================================
+# GESTIONE ORARI OPERATIVI
+# ============================================================
+
+def get_local_now():
+    """
+    Restituisce l'orario attuale nel fuso Europe/Rome.
+    """
+    return datetime.now(ROME_TIMEZONE)
+
+
+def is_weekday(current_datetime):
+    """
+    Lunedì = 0, domenica = 6.
+    """
+    return current_datetime.weekday() < 5
+
+
+def get_current_session(current_datetime=None):
+    """
+    Restituisce:
+
+        session_name
+        symbol_names
+        session_end_datetime
+
+    Risultati possibili:
+
+        EUROPE
+        USA
+        None
+    """
+
+    if current_datetime is None:
+        current_datetime = get_local_now()
+
+    if not is_weekday(current_datetime):
+        return None, [], None
+
+    current_time = current_datetime.time().replace(
+        tzinfo=None
     )
-]
+
+    if (
+        EUROPE_SESSION_START
+        <= current_time
+        < EUROPE_SESSION_END
+    ):
+        session_end = datetime.combine(
+            current_datetime.date(),
+            EUROPE_SESSION_END,
+            tzinfo=ROME_TIMEZONE,
+        )
+
+        return (
+            "EUROPE",
+            get_symbol_names_for_market("EUROPE"),
+            session_end,
+        )
+
+    if (
+        USA_SESSION_START
+        <= current_time
+        < USA_SESSION_END
+    ):
+        session_end = datetime.combine(
+            current_datetime.date(),
+            USA_SESSION_END,
+            tzinfo=ROME_TIMEZONE,
+        )
+
+        return (
+            "USA",
+            get_symbol_names_for_market("USA"),
+            session_end,
+        )
+
+    return None, [], None
+
+
+def get_next_session_start(current_datetime=None):
+    """
+    Restituisce il prossimo orario di inizio sessione.
+
+    Priorità:
+        1. apertura europea dello stesso giorno;
+        2. apertura americana dello stesso giorno;
+        3. apertura europea del prossimo giorno lavorativo.
+    """
+
+    if current_datetime is None:
+        current_datetime = get_local_now()
+
+    current_date = current_datetime.date()
+    current_time = current_datetime.time().replace(
+        tzinfo=None
+    )
+
+    if is_weekday(current_datetime):
+        europe_start = datetime.combine(
+            current_date,
+            EUROPE_SESSION_START,
+            tzinfo=ROME_TIMEZONE,
+        )
+
+        usa_start = datetime.combine(
+            current_date,
+            USA_SESSION_START,
+            tzinfo=ROME_TIMEZONE,
+        )
+
+        if current_datetime < europe_start:
+            return europe_start
+
+        if current_datetime < usa_start:
+            return usa_start
+
+    next_date = current_date + timedelta(days=1)
+
+    while next_date.weekday() >= 5:
+        next_date += timedelta(days=1)
+
+    return datetime.combine(
+        next_date,
+        EUROPE_SESSION_START,
+        tzinfo=ROME_TIMEZONE,
+    )
+
+
+def sleep_until_next_session():
+    """
+    Mette in pausa lo scanner fino alla sessione successiva.
+    """
+
+    now = get_local_now()
+    next_start = get_next_session_start(now)
+
+    wait_seconds = max(
+        1,
+        (next_start - now).total_seconds(),
+    )
+
+    log(
+        "[SCHEDULE] Nessuna sessione attiva. "
+        f"Prossima sessione: "
+        f"{next_start.strftime('%Y-%m-%d %H:%M:%S %Z')} "
+        f"tra circa {wait_seconds / 60:.1f} minuti"
+    )
+
+    time.sleep(wait_seconds)
 
 
 # ============================================================
@@ -199,16 +409,32 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
+    now = get_local_now()
+
+    session_name, active_symbols, session_end = (
+        get_current_session(now)
+    )
+
+    active_groups = build_symbol_groups(active_symbols)
+
     return jsonify({
         "status": "online",
         "service": "bot-trading",
         "time_utc": datetime.now(timezone.utc).isoformat(),
-        "symbols": len(SYMBOLS),
-        "groups": len(SYMBOL_GROUPS),
+        "time_rome": now.isoformat(),
+        "current_session": session_name or "OFF",
+        "symbols_configured": len(SYMBOLS),
+        "active_symbols": len(active_symbols),
+        "active_groups": len(active_groups),
         "symbols_per_group": MAX_SYMBOLS_PER_GROUP,
         "group_interval_seconds": GROUP_INTERVAL_SECONDS,
         "interval": INTERVAL,
         "dry_run": DRY_RUN,
+        "session_end": (
+            session_end.isoformat()
+            if session_end is not None
+            else None
+        ),
     })
 
 
@@ -217,6 +443,7 @@ def health():
     return jsonify({
         "status": "healthy",
         "time_utc": datetime.now(timezone.utc).isoformat(),
+        "time_rome": get_local_now().isoformat(),
     })
 
 
@@ -292,7 +519,7 @@ def send_telegram(text):
 
 def send_startup_test():
     """
-    Messaggio di conferma inviato prima dell'analisi dei titoli.
+    Messaggio di conferma inviato all'avvio.
     """
 
     log(
@@ -317,14 +544,22 @@ def send_startup_test():
         )
         return False
 
+    europe_symbols = get_symbol_names_for_market("EUROPE")
+    usa_symbols = get_symbol_names_for_market("USA")
+
     message = (
         "✅ Bot avviato correttamente su Render\n\n"
         f"Titoli configurati: {len(SYMBOLS)}\n"
-        f"Gruppi: {len(SYMBOL_GROUPS)}\n"
+        f"Titoli europei: {len(europe_symbols)}\n"
+        f"Titoli americani: {len(usa_symbols)}\n"
         f"Titoli per gruppo: {MAX_SYMBOLS_PER_GROUP}\n"
         f"Timeframe: {INTERVAL}\n"
-        f"VWAP bands: ±{VWAP_BAND_MULTIPLIER} deviazioni standard\n"
+        f"VWAP bands: ±{VWAP_BAND_MULTIPLIER} "
+        "deviazioni standard\n"
         f"Modalità test: {'ON' if DRY_RUN else 'OFF'}\n\n"
+        "Orari operativi, ora italiana:\n"
+        "• 09:00–15:30: titoli europei\n"
+        "• 15:30–23:00: titoli americani\n\n"
         "Strategie attive:\n"
         "• Trend EMA 200 + VWAP + Stoch RSI\n"
         "• Ritracciamento bande VWAP\n\n"
@@ -397,7 +632,7 @@ def get_time_series(display_name, config):
         is_rate_limited = (
             response.status_code == 429
             or payload.get("code") == 429
-            or "run out of API credits" in message.lower()
+            or "run out of api credits" in message.lower()
             or "current limit" in message.lower()
         )
 
@@ -614,8 +849,6 @@ def calculate_indicators(df):
     - banda VWAP superiore
     - banda VWAP inferiore
     - Stoch RSI
-
-    La VWAP viene azzerata a ogni nuova data di sessione.
     """
 
     df = df.copy()
@@ -649,8 +882,6 @@ def calculate_indicators(df):
     # VWAP giornaliera
     # --------------------------------------------------------
 
-    # Twelve Data restituisce l'orario in Exchange timezone.
-    # Raggruppare per data quindi resetta la VWAP a ogni sessione.
     df["session_date"] = df["datetime"].dt.date
 
     df["price_volume"] = (
@@ -700,8 +931,6 @@ def calculate_indicators(df):
         / safe_volume
     )
 
-    # Varianza ponderata dal volume:
-    # E[x²] - E[x]²
     weighted_second_moment = (
         df["cumulative_price_squared_volume"]
         / safe_volume
@@ -812,21 +1041,6 @@ def evaluate_signal(df):
     # ========================================================
     # STRATEGIA RITRACCIAMENTO
     # ========================================================
-    #
-    # SELL:
-    # - candela precedente sopra banda superiore
-    # - candela attuale rientra nella banda
-    # - Stoch RSI precedente ipercomprato
-    # - Stoch RSI in discesa
-    #
-    # BUY:
-    # - candela precedente sotto banda inferiore
-    # - candela attuale rientra nella banda
-    # - Stoch RSI precedente ipervenduto
-    # - Stoch RSI in salita
-    #
-    # È una conferma più prudente rispetto a vendere
-    # semplicemente perché il prezzo supera una banda.
 
     retracement_sell = (
         previous_close > previous_upper
@@ -851,18 +1065,6 @@ def evaluate_signal(df):
     # ========================================================
     # STRATEGIA TREND
     # ========================================================
-    #
-    # BUY:
-    # - prezzo sopra EMA 200
-    # - prezzo sopra VWAP
-    # - Stoch RSI precedente in oversold
-    # - Stoch RSI in risalita
-    #
-    # SELL:
-    # - prezzo sotto EMA 200
-    # - prezzo sotto VWAP
-    # - Stoch RSI precedente in overbought
-    # - Stoch RSI in discesa
 
     trend_buy = (
         current_close > current_ema
@@ -933,11 +1135,16 @@ def format_signal_message(
 last_signal_key = {}
 
 
-def scan_group(group_number, group_symbols):
+def scan_group(
+    group_number,
+    group_symbols,
+    session_name,
+    total_groups,
+):
     log("=" * 70)
     log(
         f"[GROUP] Avvio gruppo {group_number + 1}/"
-        f"{len(SYMBOL_GROUPS)}"
+        f"{total_groups} | sessione={session_name}"
     )
     log(
         f"[GROUP] Titoli: {', '.join(group_symbols)}"
@@ -947,6 +1154,16 @@ def scan_group(group_number, group_symbols):
     signal_count = 0
 
     for position, display_name in enumerate(group_symbols):
+        # Controlla che la sessione non sia cambiata durante il gruppo.
+        current_session, _, _ = get_current_session()
+
+        if current_session != session_name:
+            log(
+                "[SCHEDULE] Cambio sessione rilevato. "
+                "Interrompo il gruppo attuale."
+            )
+            break
+
         config = SYMBOLS[display_name]
 
         try:
@@ -1041,8 +1258,7 @@ def scan_group(group_number, group_symbols):
         except TwelveDataRateLimitError:
             log(
                 "[RATE LIMIT] Limite Twelve Data raggiunto. "
-                "Interrompo il gruppo attuale e riprenderò "
-                "con il gruppo successivo."
+                "Interrompo il gruppo attuale."
             )
             break
 
@@ -1053,8 +1269,6 @@ def scan_group(group_number, group_symbols):
             )
 
         finally:
-            # Pausa tra le richieste API.
-            # Non viene applicata dopo l'ultimo titolo del gruppo.
             if position < len(group_symbols) - 1:
                 time.sleep(REQUEST_DELAY_SECONDS)
 
@@ -1073,8 +1287,15 @@ def scan_group(group_number, group_symbols):
 def scanner_loop():
     log("[BOT] Thread scanner avviato")
     log(
-        f"[BOT] {len(SYMBOLS)} titoli divisi in "
-        f"{len(SYMBOL_GROUPS)} gruppi"
+        f"[BOT] Titoli totali configurati: {len(SYMBOLS)}"
+    )
+    log(
+        f"[BOT] Titoli europei: "
+        f"{len(get_symbol_names_for_market('EUROPE'))}"
+    )
+    log(
+        f"[BOT] Titoli americani: "
+        f"{len(get_symbol_names_for_market('USA'))}"
     )
     log(
         f"[BOT] Ogni gruppo contiene al massimo "
@@ -1090,16 +1311,52 @@ def scanner_loop():
     )
 
     group_index = 0
+    previous_session = None
 
     while True:
-        cycle_start = time.monotonic()
+        now = get_local_now()
 
-        current_group = SYMBOL_GROUPS[group_index]
+        session_name, active_symbols, session_end = (
+            get_current_session(now)
+        )
+
+        if session_name is None or not active_symbols:
+            group_index = 0
+            previous_session = None
+            sleep_until_next_session()
+            continue
+
+        if session_name != previous_session:
+            group_index = 0
+            previous_session = session_name
+
+            log(
+                f"[SCHEDULE] Inizio sessione {session_name}. "
+                f"Titoli attivi: {len(active_symbols)}"
+            )
+
+        active_groups = build_symbol_groups(active_symbols)
+
+        if not active_groups:
+            log(
+                "[BOT] Nessun gruppo attivo disponibile. "
+                "Attendo 60 secondi."
+            )
+            time.sleep(60)
+            continue
+
+        if group_index >= len(active_groups):
+            group_index = 0
+
+        current_group = active_groups[group_index]
+        cycle_start = time.monotonic()
 
         try:
             scan_group(
                 group_number=group_index,
                 group_symbols=current_group,
+                session_name=session_name,
+                total_groups=len(active_groups),
             )
 
         except Exception as exc:
@@ -1110,13 +1367,33 @@ def scanner_loop():
 
         group_index = (
             group_index + 1
-        ) % len(SYMBOL_GROUPS)
+        ) % len(active_groups)
 
         elapsed = time.monotonic() - cycle_start
 
-        wait_seconds = max(
+        now_after_scan = get_local_now()
+        current_session_after_scan, _, session_end_after_scan = (
+            get_current_session(now_after_scan)
+        )
+
+        if (
+            current_session_after_scan != session_name
+            or session_end_after_scan is None
+        ):
+            log(
+                "[SCHEDULE] Sessione terminata. "
+                "Ricalcolo la prossima sessione."
+            )
+            continue
+
+        seconds_until_session_end = max(
             1,
-            GROUP_INTERVAL_SECONDS - elapsed,
+            (session_end_after_scan - now_after_scan).total_seconds(),
+        )
+
+        wait_seconds = min(
+            max(1, GROUP_INTERVAL_SECONDS - elapsed),
+            seconds_until_session_end,
         )
 
         log(
