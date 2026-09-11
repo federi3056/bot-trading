@@ -19,11 +19,19 @@ PORT = int(os.getenv("PORT", "10000"))
 TWELVE_DATA_URL = "https://api.twelvedata.com/time_series"
 TELEGRAM_URL = "https://api.telegram.org"
 
-INTERVAL = os.getenv("INTERVAL", "15min")
-OUTPUTSIZE = int(os.getenv("OUTPUTSIZE", "250"))
+# Timeframe operativo principale.
+INTERVAL = os.getenv("INTERVAL", "5min")
+
+# Numero di candele richieste.
+OUTPUTSIZE = int(os.getenv("OUTPUTSIZE", "300"))
 
 # Fuso orario utilizzato per la programmazione delle sessioni.
 ROME_TIMEZONE = ZoneInfo("Europe/Rome")
+
+
+# ============================================================
+# ORARI OPERATIVI
+# ============================================================
 
 # Fasce operative in ora italiana:
 #
@@ -35,15 +43,17 @@ ROME_TIMEZONE = ZoneInfo("Europe/Rome")
 #
 # Fuori da queste fasce:
 # nessuna scansione
+
 EUROPE_SESSION_START = dt_time(9, 0)
 EUROPE_SESSION_END = dt_time(15, 30)
 
 USA_SESSION_START = dt_time(15, 30)
 USA_SESSION_END = dt_time(23, 0)
 
-# Un gruppo viene analizzato ogni 15 minuti.
+
+# Un gruppo viene analizzato ogni 5 minuti circa.
 GROUP_INTERVAL_SECONDS = int(
-    os.getenv("GROUP_INTERVAL_SECONDS", "900")
+    os.getenv("GROUP_INTERVAL_SECONDS", "300")
 )
 
 # Pausa tra le richieste API.
@@ -69,18 +79,33 @@ USE_ONLY_CLOSED_CANDLES = (
     os.getenv("USE_ONLY_CLOSED_CANDLES", "true").lower() == "true"
 )
 
-# Bande VWAP.
+
+# ============================================================
+# PARAMETRI VWAP E RITRACCIAMENTO
+# ============================================================
+
+# Ampiezza delle bande VWAP.
 VWAP_BAND_MULTIPLIER = float(
     os.getenv("VWAP_BAND_MULTIPLIER", "2.0")
 )
 
 # Soglie Stoch RSI.
 STOCH_OVERSOLD = float(
-    os.getenv("STOCH_OVERSOLD", "20")
+    os.getenv("STOCH_OVERSOLD", "5")
 )
 
 STOCH_OVERBOUGHT = float(
-    os.getenv("STOCH_OVERBOUGHT", "80")
+    os.getenv("STOCH_OVERBOUGHT", "95")
+)
+
+# Periodo ATR usato per misurare la distanza minima dalla banda.
+ATR_PERIOD = int(
+    os.getenv("ATR_PERIOD", "14")
+)
+
+# Distanza minima dalla banda espressa come multiplo dell'ATR.
+MIN_BAND_DISTANCE_ATR = float(
+    os.getenv("MIN_BAND_DISTANCE_ATR", "0.25")
 )
 
 
@@ -93,6 +118,7 @@ def get_first_env(*names):
     Restituisce la prima variabile d'ambiente valorizzata.
     Permette di mantenere compatibilità con i nomi già usati.
     """
+
     for name in names:
         value = os.getenv(name)
 
@@ -256,6 +282,7 @@ def get_local_now():
     """
     Restituisce l'orario attuale nel fuso Europe/Rome.
     """
+
     return datetime.now(ROME_TIMEZONE)
 
 
@@ -263,6 +290,7 @@ def is_weekday(current_datetime):
     """
     Lunedì = 0, domenica = 6.
     """
+
     return current_datetime.weekday() < 5
 
 
@@ -429,6 +457,13 @@ def home():
         "symbols_per_group": MAX_SYMBOLS_PER_GROUP,
         "group_interval_seconds": GROUP_INTERVAL_SECONDS,
         "interval": INTERVAL,
+        "strategy": "VWAP_RETRACEMENT",
+        "stoch_oversold": STOCH_OVERSOLD,
+        "stoch_overbought": STOCH_OVERBOUGHT,
+        "vwap_band_multiplier": VWAP_BAND_MULTIPLIER,
+        "atr_period": ATR_PERIOD,
+        "min_band_distance_atr": MIN_BAND_DISTANCE_ATR,
+        "use_only_closed_candles": USE_ONLY_CLOSED_CANDLES,
         "dry_run": DRY_RUN,
         "session_end": (
             session_end.isoformat()
@@ -556,13 +591,17 @@ def send_startup_test():
         f"Timeframe: {INTERVAL}\n"
         f"VWAP bands: ±{VWAP_BAND_MULTIPLIER} "
         "deviazioni standard\n"
+        f"Stoch RSI BUY: <= {STOCH_OVERSOLD}\n"
+        f"Stoch RSI SELL: >= {STOCH_OVERBOUGHT}\n"
+        f"ATR periodo: {ATR_PERIOD}\n"
+        f"Distanza minima banda: "
+        f"{MIN_BAND_DISTANCE_ATR} × ATR\n"
         f"Modalità test: {'ON' if DRY_RUN else 'OFF'}\n\n"
         "Orari operativi, ora italiana:\n"
         "• 09:00–15:30: titoli europei\n"
         "• 15:30–23:00: titoli americani\n\n"
-        "Strategie attive:\n"
-        "• Trend EMA 200 + VWAP + Stoch RSI\n"
-        "• Ritracciamento bande VWAP\n\n"
+        "Strategia attiva:\n"
+        "• Ritracciamento VWAP + Stoch RSI + candela di rifiuto\n\n"
         "Inizio scansione."
     )
 
@@ -737,7 +776,12 @@ def get_time_series(display_name, config):
         if USE_ONLY_CLOSED_CANDLES and len(df) > 1:
             df = df.iloc[:-1].copy()
 
-        if len(df) < 220:
+        minimum_required_candles = max(
+            100,
+            ATR_PERIOD + 30,
+        )
+
+        if len(df) < minimum_required_candles:
             log(
                 f"[DEBUG API] Dati insufficienti per {display_name}: "
                 f"{len(df)} candele disponibili"
@@ -840,15 +884,42 @@ def calculate_stoch_rsi(
     return smoothed_stoch_rsi
 
 
+def calculate_atr(df, period=14):
+    """
+    Calcola l'Average True Range tramite media esponenziale.
+    """
+
+    previous_close = df["close"].shift(1)
+
+    true_range_components = pd.concat(
+        [
+            df["high"] - df["low"],
+            (df["high"] - previous_close).abs(),
+            (df["low"] - previous_close).abs(),
+        ],
+        axis=1,
+    )
+
+    true_range = true_range_components.max(axis=1)
+
+    atr = true_range.ewm(
+        alpha=1 / period,
+        min_periods=period,
+        adjust=False,
+    ).mean()
+
+    return atr
+
+
 def calculate_indicators(df):
     """
     Calcola:
 
-    - EMA 200
     - VWAP giornaliera
     - banda VWAP superiore
     - banda VWAP inferiore
     - Stoch RSI
+    - ATR
     """
 
     df = df.copy()
@@ -857,16 +928,6 @@ def calculate_indicators(df):
         df["datetime"],
         errors="coerce",
     )
-
-    # --------------------------------------------------------
-    # EMA 200
-    # --------------------------------------------------------
-
-    df["ema200"] = df["close"].ewm(
-        span=200,
-        adjust=False,
-        min_periods=200,
-    ).mean()
 
     # --------------------------------------------------------
     # Prezzo tipico
@@ -965,7 +1026,121 @@ def calculate_indicators(df):
         df["close"]
     )
 
+    # --------------------------------------------------------
+    # ATR
+    # --------------------------------------------------------
+
+    df["atr"] = calculate_atr(
+        df,
+        period=ATR_PERIOD,
+    )
+
     return df
+
+
+# ============================================================
+# PATTERN DELLE CANDELE
+# ============================================================
+
+def get_candle_measurements(candle):
+    """
+    Restituisce le principali misure della candela.
+    """
+
+    candle_open = float(candle["open"])
+    candle_high = float(candle["high"])
+    candle_low = float(candle["low"])
+    candle_close = float(candle["close"])
+
+    candle_range = candle_high - candle_low
+    body = abs(candle_close - candle_open)
+
+    upper_wick = candle_high - max(
+        candle_open,
+        candle_close,
+    )
+
+    lower_wick = min(
+        candle_open,
+        candle_close,
+    ) - candle_low
+
+    return {
+        "open": candle_open,
+        "high": candle_high,
+        "low": candle_low,
+        "close": candle_close,
+        "range": candle_range,
+        "body": body,
+        "upper_wick": upper_wick,
+        "lower_wick": lower_wick,
+    }
+
+
+def is_hammer(candle):
+    """
+    Identifica una candela hammer.
+
+    Criteri:
+    - range positivo;
+    - lunga ombra inferiore;
+    - ombra superiore contenuta;
+    - corpo non eccessivamente grande.
+    """
+
+    values = get_candle_measurements(candle)
+
+    candle_range = values["range"]
+    body = values["body"]
+    upper_wick = values["upper_wick"]
+    lower_wick = values["lower_wick"]
+
+    if candle_range <= 0:
+        return False
+
+    effective_body = max(
+        body,
+        candle_range * 0.05,
+    )
+
+    return (
+        lower_wick >= effective_body * 2.0
+        and upper_wick <= effective_body * 1.25
+        and body <= candle_range * 0.45
+    )
+
+
+def is_shooting_star(candle):
+    """
+    Identifica una candela shooting star.
+
+    Criteri:
+    - range positivo;
+    - lunga ombra superiore;
+    - ombra inferiore contenuta;
+    - corpo non eccessivamente grande.
+    """
+
+    values = get_candle_measurements(candle)
+
+    candle_range = values["range"]
+    body = values["body"]
+    upper_wick = values["upper_wick"]
+    lower_wick = values["lower_wick"]
+
+    if candle_range <= 0:
+        return False
+
+    effective_body = max(
+        body,
+        candle_range * 0.05,
+    )
+
+    return (
+        upper_wick >= effective_body * 2.0
+        and lower_wick <= effective_body * 1.25
+        and body <= candle_range * 0.45
+    )
 
 
 # ============================================================
@@ -978,11 +1153,13 @@ def evaluate_signal(df):
 
         signal, strategy, details
 
-    Esempi:
+    Strategia utilizzata:
 
-        BUY, TREND, details
-        SELL, RETRACEMENT, details
-        None, None, None
+        VWAP + bande VWAP
+        Stoch RSI estremo
+        candela completamente oltre la banda
+        distanza minima dalla banda tramite ATR
+        hammer o shooting star
     """
 
     if len(df) < 3:
@@ -993,12 +1170,16 @@ def evaluate_signal(df):
 
     required_columns = [
         "datetime",
+        "open",
+        "high",
+        "low",
         "close",
-        "ema200",
         "vwap",
         "vwap_upper",
         "vwap_lower",
+        "vwap_std",
         "stoch_rsi",
+        "atr",
     ]
 
     for column in required_columns:
@@ -1008,83 +1189,107 @@ def evaluate_signal(df):
         if pd.isna(current[column]):
             return None, None, None
 
-    previous_close = float(previous["close"])
+    current_open = float(current["open"])
+    current_high = float(current["high"])
+    current_low = float(current["low"])
     current_close = float(current["close"])
 
-    previous_ema = float(previous["ema200"])
-    current_ema = float(current["ema200"])
-
-    previous_vwap = float(previous["vwap"])
     current_vwap = float(current["vwap"])
-
-    previous_upper = float(previous["vwap_upper"])
     current_upper = float(current["vwap_upper"])
-
-    previous_lower = float(previous["vwap_lower"])
     current_lower = float(current["vwap_lower"])
+    current_vwap_std = float(current["vwap_std"])
 
-    previous_stoch = float(previous["stoch_rsi"])
     current_stoch = float(current["stoch_rsi"])
+    previous_stoch = float(previous["stoch_rsi"])
+
+    current_atr = float(current["atr"])
+
+    if current_atr <= 0:
+        return None, None, None
+
+    minimum_band_distance = (
+        current_atr
+        * MIN_BAND_DISTANCE_ATR
+    )
+
+    sell_distance = (
+        current_low
+        - current_upper
+    )
+
+    buy_distance = (
+        current_lower
+        - current_high
+    )
+
+    current_is_hammer = is_hammer(current)
+    current_is_shooting_star = is_shooting_star(current)
 
     details = {
         "candle_time": str(current["datetime"]),
+        "open": current_open,
+        "high": current_high,
+        "low": current_low,
         "close": current_close,
-        "ema200": current_ema,
         "vwap": current_vwap,
         "vwap_upper": current_upper,
         "vwap_lower": current_lower,
-        "vwap_std": float(current["vwap_std"]),
+        "vwap_std": current_vwap_std,
         "stoch_rsi": current_stoch,
         "previous_stoch_rsi": previous_stoch,
+        "atr": current_atr,
+        "minimum_band_distance": minimum_band_distance,
+        "sell_distance_from_band": sell_distance,
+        "buy_distance_from_band": buy_distance,
+        "is_hammer": current_is_hammer,
+        "is_shooting_star": current_is_shooting_star,
     }
 
     # ========================================================
-    # STRATEGIA RITRACCIAMENTO
+    # SELL DI RITRACCIAMENTO
     # ========================================================
+    #
+    # La candela deve essere:
+    # - completamente sopra la banda superiore;
+    # - distante dalla banda almeno 0.25 ATR;
+    # - Stoch RSI in zona di ipercomprato;
+    # - Stoch RSI in diminuzione;
+    # - una shooting star.
+    #
 
     retracement_sell = (
-        previous_close > previous_upper
-        and current_close <= current_upper
-        and previous_stoch >= STOCH_OVERBOUGHT
+        current_low
+        > current_upper + minimum_band_distance
+        and current_stoch >= STOCH_OVERBOUGHT
         and current_stoch < previous_stoch
-    )
-
-    retracement_buy = (
-        previous_close < previous_lower
-        and current_close >= current_lower
-        and previous_stoch <= STOCH_OVERSOLD
-        and current_stoch > previous_stoch
+        and current_is_shooting_star
     )
 
     if retracement_sell:
         return "SELL", "RETRACEMENT", details
 
+    # ========================================================
+    # BUY DI RITRACCIAMENTO
+    # ========================================================
+    #
+    # La candela deve essere:
+    # - completamente sotto la banda inferiore;
+    # - distante dalla banda almeno 0.25 ATR;
+    # - Stoch RSI in zona di ipervenduto;
+    # - Stoch RSI in aumento;
+    # - una hammer.
+    #
+
+    retracement_buy = (
+        current_high
+        < current_lower - minimum_band_distance
+        and current_stoch <= STOCH_OVERSOLD
+        and current_stoch > previous_stoch
+        and current_is_hammer
+    )
+
     if retracement_buy:
         return "BUY", "RETRACEMENT", details
-
-    # ========================================================
-    # STRATEGIA TREND
-    # ========================================================
-
-    trend_buy = (
-        current_close > current_ema
-        and current_close > current_vwap
-        and previous_stoch <= STOCH_OVERSOLD
-        and current_stoch > previous_stoch
-    )
-
-    trend_sell = (
-        current_close < current_ema
-        and current_close < current_vwap
-        and previous_stoch >= STOCH_OVERBOUGHT
-        and current_stoch < previous_stoch
-    )
-
-    if trend_buy:
-        return "BUY", "TREND", details
-
-    if trend_sell:
-        return "SELL", "TREND", details
 
     return None, None, details
 
@@ -1104,27 +1309,39 @@ def format_signal_message(
     else:
         emoji = "🔴"
 
-    if strategy == "TREND":
-        strategy_label = "TREND"
+    strategy_label = "RITRACCIAMENTO VWAP"
+
+    if details["is_hammer"]:
+        candle_pattern = "Hammer"
+
+    elif details["is_shooting_star"]:
+        candle_pattern = "Shooting Star"
+
     else:
-        strategy_label = "RITRACCIAMENTO"
+        candle_pattern = "Nessuno"
 
     return (
         f"{emoji} SEGNALE {signal} - {strategy_label}\n\n"
         f"Titolo: {display_name}\n"
         f"Timeframe: {INTERVAL}\n"
-        f"Candela: {details['candle_time']}\n\n"
+        f"Candela: {details['candle_time']}\n"
+        f"Pattern: {candle_pattern}\n\n"
         f"Prezzo: {details['close']:.4f}\n"
-        f"EMA 200: {details['ema200']:.4f}\n"
         f"VWAP: {details['vwap']:.4f}\n"
         f"Banda superiore: "
         f"{details['vwap_upper']:.4f}\n"
         f"Banda inferiore: "
         f"{details['vwap_lower']:.4f}\n"
+        f"ATR: {details['atr']:.4f}\n"
+        f"Distanza minima richiesta: "
+        f"{details['minimum_band_distance']:.4f}\n"
         f"Stoch RSI: "
-        f"{details['stoch_rsi']:.2f}\n\n"
-        "⚠️ Segnale informativo: verificare sempre "
-        "grafico, liquidità e contesto prima di qualsiasi decisione."
+        f"{details['stoch_rsi']:.2f}\n"
+        f"Stoch RSI precedente: "
+        f"{details['previous_stoch_rsi']:.2f}\n\n"
+        "⚠️ Segnale informativo. "
+        "Verificare sempre grafico, liquidità, spread "
+        "e contesto prima di qualsiasi decisione."
     )
 
 
@@ -1142,10 +1359,12 @@ def scan_group(
     total_groups,
 ):
     log("=" * 70)
+
     log(
         f"[GROUP] Avvio gruppo {group_number + 1}/"
         f"{total_groups} | sessione={session_name}"
     )
+
     log(
         f"[GROUP] Titoli: {', '.join(group_symbols)}"
     )
@@ -1191,11 +1410,14 @@ def scan_group(
             log(
                 f"[CHECK] {display_name} | "
                 f"close={details['close']:.4f} | "
-                f"EMA200={details['ema200']:.4f} | "
                 f"VWAP={details['vwap']:.4f} | "
                 f"upper={details['vwap_upper']:.4f} | "
                 f"lower={details['vwap_lower']:.4f} | "
+                f"ATR={details['atr']:.4f} | "
                 f"StochRSI={details['stoch_rsi']:.2f} | "
+                f"pattern_hammer={details['is_hammer']} | "
+                f"pattern_shooting_star="
+                f"{details['is_shooting_star']} | "
                 f"signal={signal or 'NESSUNO'} | "
                 f"strategy={strategy or '-'}"
             )
@@ -1215,7 +1437,7 @@ def scan_group(
             if last_signal_key.get(display_name) == signal_key:
                 log(
                     f"[SIGNAL] {display_name}: "
-                    "segnale già inviato per questa candela"
+                    "segnale già gestito per questa candela"
                 )
                 continue
 
@@ -1277,6 +1499,7 @@ def scan_group(
         f"dati validi={valid_data_count} | "
         f"segnali trovati={signal_count}"
     )
+
     log("=" * 70)
 
 
@@ -1286,28 +1509,39 @@ def scan_group(
 
 def scanner_loop():
     log("[BOT] Thread scanner avviato")
+
     log(
         f"[BOT] Titoli totali configurati: {len(SYMBOLS)}"
     )
+
     log(
         f"[BOT] Titoli europei: "
         f"{len(get_symbol_names_for_market('EUROPE'))}"
     )
+
     log(
         f"[BOT] Titoli americani: "
         f"{len(get_symbol_names_for_market('USA'))}"
     )
+
     log(
         f"[BOT] Ogni gruppo contiene al massimo "
         f"{MAX_SYMBOLS_PER_GROUP} titoli"
     )
+
     log(
         f"[BOT] Intervallo tra gruppi: "
         f"{GROUP_INTERVAL_SECONDS} secondi"
     )
+
     log(
         f"[BOT] Pausa tra richieste: "
         f"{REQUEST_DELAY_SECONDS} secondi"
+    )
+
+    log(
+        f"[BOT] Strategia: "
+        "VWAP + Stoch RSI + Hammer/Shooting Star"
     )
 
     group_index = 0
@@ -1372,9 +1606,12 @@ def scanner_loop():
         elapsed = time.monotonic() - cycle_start
 
         now_after_scan = get_local_now()
-        current_session_after_scan, _, session_end_after_scan = (
-            get_current_session(now_after_scan)
-        )
+
+        (
+            current_session_after_scan,
+            _,
+            session_end_after_scan,
+        ) = get_current_session(now_after_scan)
 
         if (
             current_session_after_scan != session_name
@@ -1388,7 +1625,10 @@ def scanner_loop():
 
         seconds_until_session_end = max(
             1,
-            (session_end_after_scan - now_after_scan).total_seconds(),
+            (
+                session_end_after_scan
+                - now_after_scan
+            ).total_seconds(),
         )
 
         wait_seconds = min(
