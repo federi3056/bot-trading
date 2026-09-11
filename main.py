@@ -19,13 +19,13 @@ PORT = int(os.getenv("PORT", "10000"))
 TWELVE_DATA_URL = "https://api.twelvedata.com/time_series"
 TELEGRAM_URL = "https://api.telegram.org"
 
-# Timeframe operativo principale.
+# Timeframe operativo.
 INTERVAL = os.getenv("INTERVAL", "5min")
 
-# Numero di candele richieste.
+# Numero massimo di candele richieste per ogni titolo.
 OUTPUTSIZE = int(os.getenv("OUTPUTSIZE", "300"))
 
-# Fuso orario utilizzato per la programmazione delle sessioni.
+# Fuso orario utilizzato per gli orari operativi.
 ROME_TIMEZONE = ZoneInfo("Europe/Rome")
 
 
@@ -33,43 +33,43 @@ ROME_TIMEZONE = ZoneInfo("Europe/Rome")
 # ORARI OPERATIVI
 # ============================================================
 
-# Fasce operative in ora italiana:
+# Il bot opera solo durante la sessione americana.
 #
-# 09:00 - 15:30:
-# solo titoli europei
+# Nota:
+# questi orari sono mantenuti come configurati nel progetto:
+# 15:30 - 23:00 ora italiana.
 #
-# 15:30 - 23:00:
-# solo titoli americani
-#
-# Fuori da queste fasce:
-# nessuna scansione
-
-EUROPE_SESSION_START = dt_time(9, 0)
-EUROPE_SESSION_END = dt_time(15, 30)
+# Durante il cambio tra ora solare e ora legale americana,
+# l'apertura USA può risultare alle 14:30 ora italiana.
+# Per ora manteniamo comunque la fascia richiesta.
 
 USA_SESSION_START = dt_time(15, 30)
 USA_SESSION_END = dt_time(23, 0)
 
 
-# Un gruppo viene analizzato ogni 5 minuti circa.
-GROUP_INTERVAL_SECONDS = int(
-    os.getenv("GROUP_INTERVAL_SECONDS", "300")
-)
+# ============================================================
+# SCANSIONE DEI GRUPPI
+# ============================================================
 
-# Pausa tra le richieste API.
-REQUEST_DELAY_SECONDS = float(
-    os.getenv("REQUEST_DELAY_SECONDS", "10")
-)
-
-# Numero massimo di titoli per gruppo.
+# Numero massimo di titoli analizzati per gruppo.
 MAX_SYMBOLS_PER_GROUP = int(
     os.getenv("MAX_SYMBOLS_PER_GROUP", "6")
 )
 
-# Se true, il segnale viene stampato ma non mandato a Telegram.
+# Tempo minimo tra l'inizio di un gruppo e quello successivo.
+GROUP_INTERVAL_SECONDS = int(
+    os.getenv("GROUP_INTERVAL_SECONDS", "300")
+)
+
+# Pausa tra le singole richieste API.
+REQUEST_DELAY_SECONDS = float(
+    os.getenv("REQUEST_DELAY_SECONDS", "10")
+)
+
+# Se true, stampa i segnali ma non li invia a Telegram.
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
-# Se true, dopo un errore API viene mandato anche un messaggio Telegram.
+# Se true, vengono inviati messaggi Telegram anche per errori API.
 SEND_API_ERROR_MESSAGES = (
     os.getenv("SEND_API_ERROR_MESSAGES", "false").lower() == "true"
 )
@@ -81,42 +81,59 @@ USE_ONLY_CLOSED_CANDLES = (
 
 
 # ============================================================
-# PARAMETRI VWAP E RITRACCIAMENTO
+# PARAMETRI STRATEGIA VWAP RETRACEMENT
 # ============================================================
 
-# Ampiezza delle bande VWAP.
+# Moltiplicatore della deviazione standard per le bande VWAP.
 VWAP_BAND_MULTIPLIER = float(
     os.getenv("VWAP_BAND_MULTIPLIER", "2.0")
 )
 
-# Soglie Stoch RSI.
+# Soglia Stoch RSI per la zona ipervenduto.
 STOCH_OVERSOLD = float(
     os.getenv("STOCH_OVERSOLD", "5")
 )
 
+# Soglia Stoch RSI per la zona ipercomprato.
 STOCH_OVERBOUGHT = float(
     os.getenv("STOCH_OVERBOUGHT", "95")
 )
 
-# Periodo ATR usato per misurare la distanza minima dalla banda.
+# Periodo ATR.
 ATR_PERIOD = int(
     os.getenv("ATR_PERIOD", "14")
 )
 
-# Distanza minima dalla banda espressa come multiplo dell'ATR.
+# Distanza minima dalla banda VWAP.
 MIN_BAND_DISTANCE_ATR = float(
     os.getenv("MIN_BAND_DISTANCE_ATR", "0.25")
 )
 
+# Periodi indicatori.
+RSI_PERIOD = int(
+    os.getenv("RSI_PERIOD", "14")
+)
+
+STOCH_RSI_PERIOD = int(
+    os.getenv("STOCH_RSI_PERIOD", "14")
+)
+
+STOCH_K_PERIOD = int(
+    os.getenv("STOCH_K_PERIOD", "3")
+)
+
+STOCH_D_PERIOD = int(
+    os.getenv("STOCH_D_PERIOD", "3")
+)
+
 
 # ============================================================
-# LETTURA VARIABILI D'AMBIENTE
+# VARIABILI D'AMBIENTE
 # ============================================================
 
 def get_first_env(*names):
     """
     Restituisce la prima variabile d'ambiente valorizzata.
-    Permette di mantenere compatibilità con i nomi già usati.
     """
 
     for name in names:
@@ -148,288 +165,168 @@ TELEGRAM_CHAT_ID = get_first_env(
 
 
 # ============================================================
-# LISTA DEI TITOLI
+# TITOLI AMERICANI
 # ============================================================
+
+# 30 titoli USA:
+# - 15 NASDAQ
+# - 15 NYSE
+#
+# La lista è stata scelta privilegiando titoli generalmente
+# molto trattati e con buona liquidità.
+#
+# La liquidità effettiva può comunque variare in base alla
+# giornata e all'orario.
 
 SYMBOLS = {
-    # -------------------------
-    # Stati Uniti - NASDAQ
-    # -------------------------
-    "AAPL": {"symbol": "AAPL", "exchange": "NASDAQ"},
-    "TSLA": {"symbol": "TSLA", "exchange": "NASDAQ"},
-    "NVDA": {"symbol": "NVDA", "exchange": "NASDAQ"},
-    "MSFT": {"symbol": "MSFT", "exchange": "NASDAQ"},
-    "AMZN": {"symbol": "AMZN", "exchange": "NASDAQ"},
-    "GOOGL": {"symbol": "GOOGL", "exchange": "NASDAQ"},
-    "META": {"symbol": "META", "exchange": "NASDAQ"},
-    "AMD": {"symbol": "AMD", "exchange": "NASDAQ"},
-    "NFLX": {"symbol": "NFLX", "exchange": "NASDAQ"},
+    # --------------------------------------------------------
+    # NASDAQ
+    # --------------------------------------------------------
+    "AAPL": {
+        "symbol": "AAPL",
+        "exchange": "NASDAQ",
+    },
+    "TSLA": {
+        "symbol": "TSLA",
+        "exchange": "NASDAQ",
+    },
+    "NVDA": {
+        "symbol": "NVDA",
+        "exchange": "NASDAQ",
+    },
+    "MSFT": {
+        "symbol": "MSFT",
+        "exchange": "NASDAQ",
+    },
+    "AMZN": {
+        "symbol": "AMZN",
+        "exchange": "NASDAQ",
+    },
+    "GOOGL": {
+        "symbol": "GOOGL",
+        "exchange": "NASDAQ",
+    },
+    "META": {
+        "symbol": "META",
+        "exchange": "NASDAQ",
+    },
+    "AMD": {
+        "symbol": "AMD",
+        "exchange": "NASDAQ",
+    },
+    "NFLX": {
+        "symbol": "NFLX",
+        "exchange": "NASDAQ",
+    },
+    "AVGO": {
+        "symbol": "AVGO",
+        "exchange": "NASDAQ",
+    },
+    "INTC": {
+        "symbol": "INTC",
+        "exchange": "NASDAQ",
+    },
+    "MU": {
+        "symbol": "MU",
+        "exchange": "NASDAQ",
+    },
+    "QCOM": {
+        "symbol": "QCOM",
+        "exchange": "NASDAQ",
+    },
+    "AMAT": {
+        "symbol": "AMAT",
+        "exchange": "NASDAQ",
+    },
+    "PLTR": {
+        "symbol": "PLTR",
+        "exchange": "NASDAQ",
+    },
 
-    # -------------------------
-    # Stati Uniti - NYSE
-    # -------------------------
-    "JPM": {"symbol": "JPM", "exchange": "NYSE"},
-    "V": {"symbol": "V", "exchange": "NYSE"},
-    "DIS": {"symbol": "DIS", "exchange": "NYSE"},
-    "KO": {"symbol": "KO", "exchange": "NYSE"},
-    "XOM": {"symbol": "XOM", "exchange": "NYSE"},
-    "PFE": {"symbol": "PFE", "exchange": "NYSE"},
-
-    # -------------------------
-    # Germania - Xetra
-    # -------------------------
-    "SAP": {"symbol": "SAP", "exchange": "XETR"},
-    "SIE": {"symbol": "SIE", "exchange": "XETR"},
-    "ALV": {"symbol": "ALV", "exchange": "XETR"},
-    "BMW": {"symbol": "BMW", "exchange": "XETR"},
-
-    # -------------------------
-    # Francia - Euronext Paris
-    # -------------------------
-    "MC": {"symbol": "MC", "exchange": "XPAR"},
-    "OR": {"symbol": "OR", "exchange": "XPAR"},
-    "AIR": {"symbol": "AIR", "exchange": "XPAR"},
-    "BNP": {"symbol": "BNP", "exchange": "XPAR"},
-
-    # -------------------------
-    # Paesi Bassi - Euronext Amsterdam
-    # -------------------------
-    "ASML": {"symbol": "ASML", "exchange": "XAMS"},
-
-    # -------------------------
-    # Italia - Euronext Milan
-    # -------------------------
-    "ENI": {"symbol": "ENI", "exchange": "XMIL"},
-    "ISP": {"symbol": "ISP", "exchange": "XMIL"},
-    "ENEL": {"symbol": "ENEL", "exchange": "XMIL"},
-
-    # -------------------------
-    # Regno Unito - London Stock Exchange
-    # -------------------------
-    "HSBA": {"symbol": "HSBA", "exchange": "XLON"},
-    "ULVR": {"symbol": "ULVR", "exchange": "XLON"},
-    "AZN": {"symbol": "AZN", "exchange": "XLON"},
+    # --------------------------------------------------------
+    # NYSE
+    # --------------------------------------------------------
+    "JPM": {
+        "symbol": "JPM",
+        "exchange": "NYSE",
+    },
+    "V": {
+        "symbol": "V",
+        "exchange": "NYSE",
+    },
+    "DIS": {
+        "symbol": "DIS",
+        "exchange": "NYSE",
+    },
+    "KO": {
+        "symbol": "KO",
+        "exchange": "NYSE",
+    },
+    "XOM": {
+        "symbol": "XOM",
+        "exchange": "NYSE",
+    },
+    "PFE": {
+        "symbol": "PFE",
+        "exchange": "NYSE",
+    },
+    "ORCL": {
+        "symbol": "ORCL",
+        "exchange": "NYSE",
+    },
+    "CRM": {
+        "symbol": "CRM",
+        "exchange": "NYSE",
+    },
+    "UBER": {
+        "symbol": "UBER",
+        "exchange": "NYSE",
+    },
+    "BAC": {
+        "symbol": "BAC",
+        "exchange": "NYSE",
+    },
+    "WFC": {
+        "symbol": "WFC",
+        "exchange": "NYSE",
+    },
+    "GS": {
+        "symbol": "GS",
+        "exchange": "NYSE",
+    },
+    "C": {
+        "symbol": "C",
+        "exchange": "NYSE",
+    },
+    "CAT": {
+        "symbol": "CAT",
+        "exchange": "NYSE",
+    },
+    "MRK": {
+        "symbol": "MRK",
+        "exchange": "NYSE",
+    },
 }
 
-
-# ============================================================
-# CLASSIFICAZIONE DEI MERCATI
-# ============================================================
 
 US_EXCHANGES = {
     "NASDAQ",
     "NYSE",
 }
 
-EUROPEAN_EXCHANGES = {
-    "XETR",
-    "XPAR",
-    "XAMS",
-    "XMIL",
-    "XLON",
-}
 
+# ============================================================
+# STATO GLOBALE
+# ============================================================
 
-def get_symbol_names_for_market(market_name):
-    """
-    Restituisce i titoli appartenenti al mercato richiesto.
+last_signal_by_symbol = {}
+last_api_rate_limit_log_time = None
 
-    market_name può essere:
-        EUROPE
-        USA
-    """
-
-    if market_name == "EUROPE":
-        exchanges = EUROPEAN_EXCHANGES
-
-    elif market_name == "USA":
-        exchanges = US_EXCHANGES
-
-    else:
-        return []
-
-    return [
-        display_name
-        for display_name, config in SYMBOLS.items()
-        if config["exchange"] in exchanges
-    ]
-
-
-def build_symbol_groups(symbol_names):
-    """
-    Divide una lista di titoli in gruppi.
-    """
-
-    return [
-        symbol_names[index:index + MAX_SYMBOLS_PER_GROUP]
-        for index in range(
-            0,
-            len(symbol_names),
-            MAX_SYMBOLS_PER_GROUP,
-        )
-    ]
-
-
-ALL_SYMBOL_NAMES = list(SYMBOLS.keys())
-ALL_SYMBOL_GROUPS = build_symbol_groups(ALL_SYMBOL_NAMES)
+state_lock = threading.Lock()
 
 
 # ============================================================
-# GESTIONE ORARI OPERATIVI
-# ============================================================
-
-def get_local_now():
-    """
-    Restituisce l'orario attuale nel fuso Europe/Rome.
-    """
-
-    return datetime.now(ROME_TIMEZONE)
-
-
-def is_weekday(current_datetime):
-    """
-    Lunedì = 0, domenica = 6.
-    """
-
-    return current_datetime.weekday() < 5
-
-
-def get_current_session(current_datetime=None):
-    """
-    Restituisce:
-
-        session_name
-        symbol_names
-        session_end_datetime
-
-    Risultati possibili:
-
-        EUROPE
-        USA
-        None
-    """
-
-    if current_datetime is None:
-        current_datetime = get_local_now()
-
-    if not is_weekday(current_datetime):
-        return None, [], None
-
-    current_time = current_datetime.time().replace(
-        tzinfo=None
-    )
-
-    if (
-        EUROPE_SESSION_START
-        <= current_time
-        < EUROPE_SESSION_END
-    ):
-        session_end = datetime.combine(
-            current_datetime.date(),
-            EUROPE_SESSION_END,
-            tzinfo=ROME_TIMEZONE,
-        )
-
-        return (
-            "EUROPE",
-            get_symbol_names_for_market("EUROPE"),
-            session_end,
-        )
-
-    if (
-        USA_SESSION_START
-        <= current_time
-        < USA_SESSION_END
-    ):
-        session_end = datetime.combine(
-            current_datetime.date(),
-            USA_SESSION_END,
-            tzinfo=ROME_TIMEZONE,
-        )
-
-        return (
-            "USA",
-            get_symbol_names_for_market("USA"),
-            session_end,
-        )
-
-    return None, [], None
-
-
-def get_next_session_start(current_datetime=None):
-    """
-    Restituisce il prossimo orario di inizio sessione.
-
-    Priorità:
-        1. apertura europea dello stesso giorno;
-        2. apertura americana dello stesso giorno;
-        3. apertura europea del prossimo giorno lavorativo.
-    """
-
-    if current_datetime is None:
-        current_datetime = get_local_now()
-
-    current_date = current_datetime.date()
-    current_time = current_datetime.time().replace(
-        tzinfo=None
-    )
-
-    if is_weekday(current_datetime):
-        europe_start = datetime.combine(
-            current_date,
-            EUROPE_SESSION_START,
-            tzinfo=ROME_TIMEZONE,
-        )
-
-        usa_start = datetime.combine(
-            current_date,
-            USA_SESSION_START,
-            tzinfo=ROME_TIMEZONE,
-        )
-
-        if current_datetime < europe_start:
-            return europe_start
-
-        if current_datetime < usa_start:
-            return usa_start
-
-    next_date = current_date + timedelta(days=1)
-
-    while next_date.weekday() >= 5:
-        next_date += timedelta(days=1)
-
-    return datetime.combine(
-        next_date,
-        EUROPE_SESSION_START,
-        tzinfo=ROME_TIMEZONE,
-    )
-
-
-def sleep_until_next_session():
-    """
-    Mette in pausa lo scanner fino alla sessione successiva.
-    """
-
-    now = get_local_now()
-    next_start = get_next_session_start(now)
-
-    wait_seconds = max(
-        1,
-        (next_start - now).total_seconds(),
-    )
-
-    log(
-        "[SCHEDULE] Nessuna sessione attiva. "
-        f"Prossima sessione: "
-        f"{next_start.strftime('%Y-%m-%d %H:%M:%S %Z')} "
-        f"tra circa {wait_seconds / 60:.1f} minuti"
-    )
-
-    time.sleep(wait_seconds)
-
-
-# ============================================================
-# SERVER WEB PER RENDER
+# SERVER WEB
 # ============================================================
 
 app = Flask(__name__)
@@ -447,7 +344,7 @@ def home():
 
     return jsonify({
         "status": "online",
-        "service": "bot-trading",
+        "service": "vwap-retracement-bot",
         "time_utc": datetime.now(timezone.utc).isoformat(),
         "time_rome": now.isoformat(),
         "current_session": session_name or "OFF",
@@ -456,16 +353,19 @@ def home():
         "active_groups": len(active_groups),
         "symbols_per_group": MAX_SYMBOLS_PER_GROUP,
         "group_interval_seconds": GROUP_INTERVAL_SECONDS,
+        "request_delay_seconds": REQUEST_DELAY_SECONDS,
         "interval": INTERVAL,
         "strategy": "VWAP_RETRACEMENT",
+        "vwap_band_multiplier": VWAP_BAND_MULTIPLIER,
         "stoch_oversold": STOCH_OVERSOLD,
         "stoch_overbought": STOCH_OVERBOUGHT,
-        "vwap_band_multiplier": VWAP_BAND_MULTIPLIER,
         "atr_period": ATR_PERIOD,
         "min_band_distance_atr": MIN_BAND_DISTANCE_ATR,
         "use_only_closed_candles": USE_ONLY_CLOSED_CANDLES,
         "dry_run": DRY_RUN,
-        "session_end": (
+        "session_start": USA_SESSION_START.strftime("%H:%M"),
+        "session_end": USA_SESSION_END.strftime("%H:%M"),
+        "session_end_datetime": (
             session_end.isoformat()
             if session_end is not None
             else None
@@ -483,12 +383,138 @@ def health():
 
 
 # ============================================================
+# FUNZIONI ORARIO
+# ============================================================
+
+def get_local_now():
+    """
+    Restituisce l'ora corrente nel fuso Europe/Rome.
+    """
+
+    return datetime.now(ROME_TIMEZONE)
+
+
+def is_weekday(current_datetime):
+    """
+    Restituisce false durante sabato e domenica.
+    """
+
+    return current_datetime.weekday() < 5
+
+
+def get_current_session(current_datetime=None):
+    """
+    Restituisce:
+
+        nome_sessione
+        lista_titoli_attivi
+        orario_fine_sessione
+
+    L'unica sessione prevista è:
+
+        USA: 15:30 - 23:00 ora italiana
+    """
+
+    if current_datetime is None:
+        current_datetime = get_local_now()
+
+    if not is_weekday(current_datetime):
+        return None, [], None
+
+    current_time = current_datetime.time().replace(
+        tzinfo=None
+    )
+
+    if (
+        USA_SESSION_START
+        <= current_time
+        < USA_SESSION_END
+    ):
+        session_end = datetime.combine(
+            current_datetime.date(),
+            USA_SESSION_END,
+            tzinfo=ROME_TIMEZONE,
+        )
+
+        return (
+            "USA",
+            list(SYMBOLS.keys()),
+            session_end,
+        )
+
+    return None, [], None
+
+
+def get_next_session_start(current_datetime=None):
+    """
+    Restituisce il prossimo inizio della sessione USA.
+    """
+
+    if current_datetime is None:
+        current_datetime = get_local_now()
+
+    current_date = current_datetime.date()
+
+    if is_weekday(current_datetime):
+        today_start = datetime.combine(
+            current_date,
+            USA_SESSION_START,
+            tzinfo=ROME_TIMEZONE,
+        )
+
+        if current_datetime < today_start:
+            return today_start
+
+    next_date = current_date + timedelta(days=1)
+
+    while next_date.weekday() >= 5:
+        next_date += timedelta(days=1)
+
+    return datetime.combine(
+        next_date,
+        USA_SESSION_START,
+        tzinfo=ROME_TIMEZONE,
+    )
+
+
+def sleep_until_next_session():
+    """
+    Mette in pausa il bot fino alla sessione USA successiva.
+    """
+
+    now = get_local_now()
+    next_start = get_next_session_start(now)
+
+    wait_seconds = max(
+        1,
+        (next_start - now).total_seconds(),
+    )
+
+    log(
+        "[SCHEDULE] Nessuna sessione attiva. "
+        f"Prossima sessione: "
+        f"{next_start.strftime('%Y-%m-%d %H:%M:%S %Z')}. "
+        f"Attesa prevista: {wait_seconds / 60:.1f} minuti"
+    )
+
+    time.sleep(wait_seconds)
+
+
+# ============================================================
 # LOG
 # ============================================================
 
 def log(message):
+    """
+    Stampa un messaggio con timestamp.
+    """
+
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{now}] {message}", flush=True)
+
+    print(
+        f"[{now}] {message}",
+        flush=True,
+    )
 
 
 # ============================================================
@@ -496,6 +522,10 @@ def log(message):
 # ============================================================
 
 def telegram_configured():
+    """
+    Verifica che Telegram sia configurato.
+    """
+
     return bool(
         TELEGRAM_BOT_TOKEN
         and TELEGRAM_CHAT_ID
@@ -505,7 +535,6 @@ def telegram_configured():
 def send_telegram(text):
     """
     Invia un messaggio Telegram.
-    Il token non viene mai stampato nei log.
     """
 
     if not telegram_configured():
@@ -531,7 +560,8 @@ def send_telegram(text):
         )
 
         log(
-            f"[TELEGRAM] status={response.status_code} "
+            "[TELEGRAM] "
+            f"status={response.status_code} "
             f"response={response.text[:500]}"
         )
 
@@ -539,14 +569,14 @@ def send_telegram(text):
 
     except requests.RequestException as exc:
         log(
-            "[TELEGRAM] Errore di rete durante l'invio: "
+            "[TELEGRAM] Errore di rete: "
             f"{repr(exc)}"
         )
         return False
 
     except Exception as exc:
         log(
-            "[TELEGRAM] Errore imprevisto durante l'invio: "
+            "[TELEGRAM] Errore imprevisto: "
             f"{repr(exc)}"
         )
         return False
@@ -554,7 +584,7 @@ def send_telegram(text):
 
 def send_startup_test():
     """
-    Messaggio di conferma inviato all'avvio.
+    Invia il messaggio di avvio.
     """
 
     log(
@@ -574,67 +604,77 @@ def send_startup_test():
 
     if not telegram_configured():
         log(
-            "[CHECK] Telegram non configurato: "
-            "messaggio di avvio non inviato"
+            "[CHECK] Telegram non configurato. "
+            "Messaggio di avvio non inviato."
         )
         return False
 
-    europe_symbols = get_symbol_names_for_market("EUROPE")
-    usa_symbols = get_symbol_names_for_market("USA")
+    nasdaq_symbols = [
+        name
+        for name, config in SYMBOLS.items()
+        if config["exchange"] == "NASDAQ"
+    ]
+
+    nyse_symbols = [
+        name
+        for name, config in SYMBOLS.items()
+        if config["exchange"] == "NYSE"
+    ]
 
     message = (
-        "✅ Bot avviato correttamente su Render\n\n"
+        "✅ Bot avviato correttamente\n\n"
         f"Titoli configurati: {len(SYMBOLS)}\n"
-        f"Titoli europei: {len(europe_symbols)}\n"
-        f"Titoli americani: {len(usa_symbols)}\n"
+        f"Titoli NASDAQ: {len(nasdaq_symbols)}\n"
+        f"Titoli NYSE: {len(nyse_symbols)}\n"
         f"Titoli per gruppo: {MAX_SYMBOLS_PER_GROUP}\n"
         f"Timeframe: {INTERVAL}\n"
-        f"VWAP bands: ±{VWAP_BAND_MULTIPLIER} "
-        "deviazioni standard\n"
+        f"Bande VWAP: ±{VWAP_BAND_MULTIPLIER} deviazioni standard\n"
         f"Stoch RSI BUY: <= {STOCH_OVERSOLD}\n"
         f"Stoch RSI SELL: >= {STOCH_OVERBOUGHT}\n"
         f"ATR periodo: {ATR_PERIOD}\n"
         f"Distanza minima banda: "
         f"{MIN_BAND_DISTANCE_ATR} × ATR\n"
-        f"Modalità test: {'ON' if DRY_RUN else 'OFF'}\n\n"
-        "Orari operativi, ora italiana:\n"
-        "• 09:00–15:30: titoli europei\n"
+        f"Modalità demo: {'ON' if DRY_RUN else 'OFF'}\n\n"
+        "Orario operativo, ora italiana:\n"
         "• 15:30–23:00: titoli americani\n\n"
         "Strategia attiva:\n"
-        "• Ritracciamento VWAP + Stoch RSI + candela di rifiuto\n\n"
+        "• Ritracciamento VWAP\n"
+        "• Stoch RSI estremo con conferma di inversione\n"
+        "• Candela completamente oltre la banda VWAP\n"
+        "• Hammer o shooting star\n\n"
         "Inizio scansione."
     )
 
     log("[CHECK] Invio messaggio di avvio Telegram...")
+
     return send_telegram(message)
 
 
 # ============================================================
-# ECCEZIONE RATE LIMIT
+# ERRORI TWELVE DATA
 # ============================================================
 
 class TwelveDataRateLimitError(Exception):
-    pass
+    """
+    Errore specifico per limite API Twelve Data.
+    """
 
 
 # ============================================================
-# TWELVE DATA
+# DOWNLOAD DATI
 # ============================================================
 
 def get_time_series(display_name, config):
     """
     Scarica le candele di un singolo titolo.
-
-    La richiesta utilizza:
-        symbol=AMD
-        exchange=NASDAQ
-
-    e non:
-        symbol=AMD:NASDAQ
     """
 
+    global last_api_rate_limit_log_time
+
     if not TWELVE_DATA_API_KEY:
-        log("[API] TWELVE_DATA_API_KEY mancante")
+        log(
+            "[API] TWELVE_DATA_API_KEY mancante"
+        )
         return None
 
     params = {
@@ -666,20 +706,36 @@ def get_time_series(display_name, config):
             )
             return None
 
-        message = str(payload.get("message", ""))
+        message = str(
+            payload.get("message", "")
+        )
 
-        is_rate_limited = (
+        rate_limit_detected = (
             response.status_code == 429
             or payload.get("code") == 429
             or "run out of api credits" in message.lower()
             or "current limit" in message.lower()
+            or "rate limit" in message.lower()
         )
 
-        if is_rate_limited:
-            log(
-                f"[DEBUG API] Limite API raggiunto durante "
-                f"l'analisi di {display_name}: {payload}"
+        if rate_limit_detected:
+            now = datetime.now()
+
+            should_log = (
+                last_api_rate_limit_log_time is None
+                or (
+                    now - last_api_rate_limit_log_time
+                ).total_seconds() > 300
             )
+
+            if should_log:
+                last_api_rate_limit_log_time = now
+
+                log(
+                    "[DEBUG API] Limite API Twelve Data raggiunto: "
+                    f"{payload}"
+                )
+
             raise TwelveDataRateLimitError(
                 "Limite API Twelve Data raggiunto"
             )
@@ -729,8 +785,8 @@ def get_time_series(display_name, config):
 
         if missing_columns:
             log(
-                f"[DEBUG API] Colonne mancanti per {display_name}: "
-                f"{missing_columns}"
+                f"[DEBUG API] Colonne mancanti per "
+                f"{display_name}: {missing_columns}"
             )
             return None
 
@@ -750,6 +806,7 @@ def get_time_series(display_name, config):
                 df["volume"],
                 errors="coerce",
             ).fillna(0.0)
+
         else:
             df["volume"] = 0.0
 
@@ -773,42 +830,38 @@ def get_time_series(display_name, config):
             ascending=True,
         ).reset_index(drop=True)
 
+        # Evita di analizzare la candela ancora in formazione.
         if USE_ONLY_CLOSED_CANDLES and len(df) > 1:
             df = df.iloc[:-1].copy()
 
         minimum_required_candles = max(
             100,
-            ATR_PERIOD + 30,
+            ATR_PERIOD + RSI_PERIOD + STOCH_RSI_PERIOD + 20,
         )
 
         if len(df) < minimum_required_candles:
             log(
-                f"[DEBUG API] Dati insufficienti per {display_name}: "
-                f"{len(df)} candele disponibili"
+                f"[DATA] Dati insufficienti per {display_name}: "
+                f"{len(df)} candele, minimo richiesto "
+                f"{minimum_required_candles}"
             )
             return None
 
-        log(
-            f"[API OK] {display_name}: "
-            f"{len(df)} candele ricevute "
-            f"({config['symbol']} / {config['exchange']})"
-        )
-
-        return df
+        return df.reset_index(drop=True)
 
     except TwelveDataRateLimitError:
         raise
 
     except requests.RequestException as exc:
         log(
-            f"[DEBUG API] Errore di rete per {display_name}: "
+            f"[API] Errore di rete per {display_name}: "
             f"{repr(exc)}"
         )
         return None
 
     except Exception as exc:
         log(
-            f"[DEBUG API] Errore imprevisto per {display_name}: "
+            f"[API] Errore imprevisto per {display_name}: "
             f"{repr(exc)}"
         )
         return None
@@ -818,31 +871,48 @@ def get_time_series(display_name, config):
 # INDICATORI
 # ============================================================
 
-def calculate_rsi(series, period=14):
-    delta = series.diff()
+def calculate_rsi(close, period=14):
+    """
+    Calcola RSI con il metodo Wilder.
+    """
 
-    gains = delta.clip(lower=0)
-    losses = -delta.clip(upper=0)
+    delta = close.diff()
 
-    average_gain = gains.ewm(
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    average_gain = gain.ewm(
         alpha=1 / period,
         min_periods=period,
         adjust=False,
     ).mean()
 
-    average_loss = losses.ewm(
+    average_loss = loss.ewm(
         alpha=1 / period,
         min_periods=period,
         adjust=False,
     ).mean()
 
-    relative_strength = (
-        average_gain
-        / average_loss.replace(0, np.nan)
+    rs = average_gain / average_loss.replace(
+        0,
+        np.nan,
     )
 
     rsi = 100 - (
-        100 / (1 + relative_strength)
+        100 / (1 + rs)
+    )
+
+    rsi = rsi.where(
+        average_loss != 0,
+        100,
+    )
+
+    rsi = rsi.where(
+        ~(
+            (average_gain == 0)
+            & (average_loss == 0)
+        ),
+        50,
     )
 
     return rsi
@@ -852,41 +922,62 @@ def calculate_stoch_rsi(
     close,
     rsi_period=14,
     stoch_period=14,
-    smooth_period=3,
+    k_period=3,
+    d_period=3,
 ):
+    """
+    Calcola Stoch RSI espresso su scala 0-100.
+    """
+
     rsi = calculate_rsi(
         close,
         period=rsi_period,
     )
 
     lowest_rsi = rsi.rolling(
-        window=stoch_period
+        window=stoch_period,
+        min_periods=stoch_period,
     ).min()
 
     highest_rsi = rsi.rolling(
-        window=stoch_period
+        window=stoch_period,
+        min_periods=stoch_period,
     ).max()
 
-    denominator = (
+    rsi_range = (
         highest_rsi - lowest_rsi
-    ).replace(0, np.nan)
+    ).replace(
+        0,
+        np.nan,
+    )
 
     stoch_rsi = (
         (rsi - lowest_rsi)
-        / denominator
+        / rsi_range
         * 100
     )
 
-    smoothed_stoch_rsi = stoch_rsi.rolling(
-        window=smooth_period
+    stoch_k = stoch_rsi.rolling(
+        window=k_period,
+        min_periods=k_period,
     ).mean()
 
-    return smoothed_stoch_rsi
+    stoch_d = stoch_k.rolling(
+        window=d_period,
+        min_periods=d_period,
+    ).mean()
+
+    return (
+        rsi,
+        stoch_rsi,
+        stoch_k,
+        stoch_d,
+    )
 
 
 def calculate_atr(df, period=14):
     """
-    Calcola l'Average True Range tramite media esponenziale.
+    Calcola Average True Range.
     """
 
     previous_close = df["close"].shift(1)
@@ -900,7 +991,9 @@ def calculate_atr(df, period=14):
         axis=1,
     )
 
-    true_range = true_range_components.max(axis=1)
+    true_range = true_range_components.max(
+        axis=1
+    )
 
     atr = true_range.ewm(
         alpha=1 / period,
@@ -911,765 +1004,770 @@ def calculate_atr(df, period=14):
     return atr
 
 
-def calculate_indicators(df):
+def calculate_session_vwap(df):
     """
-    Calcola:
-
-    - VWAP giornaliera
-    - banda VWAP superiore
-    - banda VWAP inferiore
-    - Stoch RSI
-    - ATR
+    Calcola VWAP ancorato all'inizio di ogni giornata.
     """
 
-    df = df.copy()
-
-    df["datetime"] = pd.to_datetime(
-        df["datetime"],
-        errors="coerce",
-    )
-
-    # --------------------------------------------------------
-    # Prezzo tipico
-    # --------------------------------------------------------
-
-    df["typical_price"] = (
+    typical_price = (
         df["high"]
         + df["low"]
         + df["close"]
-    ) / 3.0
+    ) / 3
 
-    # --------------------------------------------------------
-    # VWAP giornaliera
-    # --------------------------------------------------------
+    volume = df["volume"].fillna(0.0)
 
-    df["session_date"] = df["datetime"].dt.date
+    working = pd.DataFrame(index=df.index)
 
-    df["price_volume"] = (
-        df["typical_price"]
-        * df["volume"]
+    working["typical_price"] = typical_price
+    working["volume"] = volume
+    working["price_volume"] = (
+        working["typical_price"]
+        * working["volume"]
     )
 
-    df["price_squared_volume"] = (
-        df["typical_price"] ** 2
-        * df["volume"]
+    date_key = df["datetime"].dt.date
+
+    cumulative_price_volume = (
+        working
+        .groupby(date_key)["price_volume"]
+        .cumsum()
     )
 
-    grouped_volume = df.groupby(
-        "session_date",
-        sort=False,
-    )["volume"]
-
-    grouped_price_volume = df.groupby(
-        "session_date",
-        sort=False,
-    )["price_volume"]
-
-    grouped_price_squared_volume = df.groupby(
-        "session_date",
-        sort=False,
-    )["price_squared_volume"]
-
-    df["cumulative_volume"] = (
-        grouped_volume.cumsum()
+    cumulative_volume = (
+        working
+        .groupby(date_key)["volume"]
+        .cumsum()
     )
 
-    df["cumulative_price_volume"] = (
-        grouped_price_volume.cumsum()
+    # Se il volume non è disponibile o vale zero,
+    # viene usata una VWAP basata sul prezzo tipico.
+    vwap_from_volume = (
+        cumulative_price_volume
+        / cumulative_volume.replace(0, np.nan)
     )
 
-    df["cumulative_price_squared_volume"] = (
-        grouped_price_squared_volume.cumsum()
+    vwap_from_price = (
+        working
+        .groupby(date_key)["typical_price"]
+        .expanding()
+        .mean()
+        .reset_index(level=0, drop=True)
     )
 
-    safe_volume = df["cumulative_volume"].replace(
-        0,
-        np.nan,
+    vwap_from_price = vwap_from_price.reindex(
+        df.index
     )
 
-    df["vwap"] = (
-        df["cumulative_price_volume"]
-        / safe_volume
+    vwap = vwap_from_volume.fillna(
+        vwap_from_price
     )
 
-    weighted_second_moment = (
-        df["cumulative_price_squared_volume"]
-        / safe_volume
+    return vwap
+
+
+def add_indicators(df):
+    """
+    Aggiunge tutti gli indicatori necessari.
+    """
+
+    result = df.copy()
+
+    result["vwap"] = calculate_session_vwap(
+        result
     )
 
-    variance = (
-        weighted_second_moment
-        - df["vwap"] ** 2
+    result["vwap_std"] = (
+        result
+        .groupby(result["datetime"].dt.date)["close"]
+        .transform(
+            lambda values: values.expanding(
+                min_periods=2
+            ).std()
+        )
     )
 
-    variance = variance.clip(lower=0)
-
-    df["vwap_std"] = np.sqrt(variance)
-
-    df["vwap_upper"] = (
-        df["vwap"]
-        + VWAP_BAND_MULTIPLIER
-        * df["vwap_std"]
+    result["vwap_std"] = result["vwap_std"].fillna(
+        result["close"].rolling(
+            window=20,
+            min_periods=2,
+        ).std()
     )
 
-    df["vwap_lower"] = (
-        df["vwap"]
-        - VWAP_BAND_MULTIPLIER
-        * df["vwap_std"]
+    result["vwap_upper"] = (
+        result["vwap"]
+        + (
+            result["vwap_std"]
+            * VWAP_BAND_MULTIPLIER
+        )
     )
 
-    # --------------------------------------------------------
-    # Stoch RSI
-    # --------------------------------------------------------
-
-    df["stoch_rsi"] = calculate_stoch_rsi(
-        df["close"]
+    result["vwap_lower"] = (
+        result["vwap"]
+        - (
+            result["vwap_std"]
+            * VWAP_BAND_MULTIPLIER
+        )
     )
 
-    # --------------------------------------------------------
-    # ATR
-    # --------------------------------------------------------
-
-    df["atr"] = calculate_atr(
-        df,
+    result["atr"] = calculate_atr(
+        result,
         period=ATR_PERIOD,
     )
 
-    return df
-
-
-# ============================================================
-# PATTERN DELLE CANDELE
-# ============================================================
-
-def get_candle_measurements(candle):
-    """
-    Restituisce le principali misure della candela.
-    """
-
-    candle_open = float(candle["open"])
-    candle_high = float(candle["high"])
-    candle_low = float(candle["low"])
-    candle_close = float(candle["close"])
-
-    candle_range = candle_high - candle_low
-    body = abs(candle_close - candle_open)
-
-    upper_wick = candle_high - max(
-        candle_open,
-        candle_close,
+    (
+        result["rsi"],
+        result["stoch_rsi"],
+        result["stoch_k"],
+        result["stoch_d"],
+    ) = calculate_stoch_rsi(
+        result["close"],
+        rsi_period=RSI_PERIOD,
+        stoch_period=STOCH_RSI_PERIOD,
+        k_period=STOCH_K_PERIOD,
+        d_period=STOCH_D_PERIOD,
     )
 
-    lower_wick = min(
-        candle_open,
-        candle_close,
-    ) - candle_low
-
-    return {
-        "open": candle_open,
-        "high": candle_high,
-        "low": candle_low,
-        "close": candle_close,
-        "range": candle_range,
-        "body": body,
-        "upper_wick": upper_wick,
-        "lower_wick": lower_wick,
-    }
+    return result
 
 
-def is_hammer(candle):
+# ============================================================
+# PATTERN CANDELE
+# ============================================================
+
+def candle_is_hammer(row):
     """
-    Identifica una candela hammer.
+    Riconosce una candela hammer rialzista.
 
-    Criteri:
-    - range positivo;
+    Non richiede un colore specifico, ma privilegia:
+    - corpo relativamente piccolo;
     - lunga ombra inferiore;
-    - ombra superiore contenuta;
-    - corpo non eccessivamente grande.
+    - ombra superiore ridotta.
     """
 
-    values = get_candle_measurements(candle)
-
-    candle_range = values["range"]
-    body = values["body"]
-    upper_wick = values["upper_wick"]
-    lower_wick = values["lower_wick"]
+    candle_range = row["high"] - row["low"]
 
     if candle_range <= 0:
         return False
 
-    effective_body = max(
-        body,
-        candle_range * 0.05,
+    body = abs(
+        row["close"] - row["open"]
+    )
+
+    upper_wick = (
+        row["high"]
+        - max(row["open"], row["close"])
+    )
+
+    lower_wick = (
+        min(row["open"], row["close"])
+        - row["low"]
     )
 
     return (
-        lower_wick >= effective_body * 2.0
-        and upper_wick <= effective_body * 1.25
-        and body <= candle_range * 0.45
+        body <= candle_range * 0.40
+        and lower_wick >= body * 2.0
+        and upper_wick <= candle_range * 0.35
     )
 
 
-def is_shooting_star(candle):
+def candle_is_shooting_star(row):
     """
-    Identifica una candela shooting star.
+    Riconosce una shooting star ribassista.
 
-    Criteri:
-    - range positivo;
+    Privilegia:
+    - corpo relativamente piccolo;
     - lunga ombra superiore;
-    - ombra inferiore contenuta;
-    - corpo non eccessivamente grande.
+    - ombra inferiore ridotta.
     """
 
-    values = get_candle_measurements(candle)
-
-    candle_range = values["range"]
-    body = values["body"]
-    upper_wick = values["upper_wick"]
-    lower_wick = values["lower_wick"]
+    candle_range = row["high"] - row["low"]
 
     if candle_range <= 0:
         return False
 
-    effective_body = max(
-        body,
-        candle_range * 0.05,
+    body = abs(
+        row["close"] - row["open"]
+    )
+
+    upper_wick = (
+        row["high"]
+        - max(row["open"], row["close"])
+    )
+
+    lower_wick = (
+        min(row["open"], row["close"])
+        - row["low"]
     )
 
     return (
-        upper_wick >= effective_body * 2.0
-        and lower_wick <= effective_body * 1.25
-        and body <= candle_range * 0.45
+        body <= candle_range * 0.40
+        and upper_wick >= body * 2.0
+        and lower_wick <= candle_range * 0.35
     )
 
 
 # ============================================================
-# LOGICA DEI SEGNALI
+# GENERAZIONE SEGNALE
 # ============================================================
 
-def evaluate_signal(df):
+def safe_float(value):
     """
-    Restituisce:
-
-        signal, strategy, details
-
-    Strategia utilizzata:
-
-        VWAP + bande VWAP
-        Stoch RSI estremo
-        candela completamente oltre la banda
-        distanza minima dalla banda tramite ATR
-        hammer o shooting star
+    Converte un valore in float oppure restituisce None.
     """
 
-    if len(df) < 3:
-        return None, None, None
+    try:
+        if pd.isna(value):
+            return None
 
-    previous = df.iloc[-2]
-    current = df.iloc[-1]
+        return float(value)
 
-    required_columns = [
-        "datetime",
-        "open",
-        "high",
-        "low",
-        "close",
-        "vwap",
-        "vwap_upper",
-        "vwap_lower",
-        "vwap_std",
-        "stoch_rsi",
-        "atr",
+    except (TypeError, ValueError):
+        return None
+
+
+def evaluate_signal(display_name, df):
+    """
+    Valuta l'ultima candela chiusa.
+
+    BUY:
+        - candela completamente sotto la banda inferiore;
+        - distanza minima dalla banda >= 0.25 ATR;
+        - Stoch RSI precedente <= 5;
+        - Stoch RSI attuale in risalita;
+        - candela hammer.
+
+    SELL:
+        - candela completamente sopra la banda superiore;
+        - distanza minima dalla banda >= 0.25 ATR;
+        - Stoch RSI precedente >= 95;
+        - Stoch RSI attuale in discesa;
+        - candela shooting star.
+    """
+
+    if df is None or len(df) < 3:
+        return None
+
+    working = add_indicators(df)
+
+    if len(working) < 3:
+        return None
+
+    previous = working.iloc[-2]
+    current = working.iloc[-1]
+
+    required_values = [
+        current["vwap"],
+        current["vwap_upper"],
+        current["vwap_lower"],
+        current["atr"],
+        current["stoch_rsi"],
+        previous["stoch_rsi"],
     ]
 
-    for column in required_columns:
-        if pd.isna(previous[column]):
-            return None, None, None
+    if any(
+        pd.isna(value)
+        for value in required_values
+    ):
+        return None
 
-        if pd.isna(current[column]):
-            return None, None, None
+    atr = float(current["atr"])
 
-    current_open = float(current["open"])
-    current_high = float(current["high"])
-    current_low = float(current["low"])
-    current_close = float(current["close"])
+    if atr <= 0:
+        return None
 
-    current_vwap = float(current["vwap"])
-    current_upper = float(current["vwap_upper"])
-    current_lower = float(current["vwap_lower"])
-    current_vwap_std = float(current["vwap_std"])
-
-    current_stoch = float(current["stoch_rsi"])
-    previous_stoch = float(previous["stoch_rsi"])
-
-    current_atr = float(current["atr"])
-
-    if current_atr <= 0:
-        return None, None, None
-
-    minimum_band_distance = (
-        current_atr
-        * MIN_BAND_DISTANCE_ATR
+    current_stoch = float(
+        current["stoch_rsi"]
     )
 
-    sell_distance = (
-        current_low
-        - current_upper
+    previous_stoch = float(
+        previous["stoch_rsi"]
     )
 
-    buy_distance = (
-        current_lower
-        - current_high
+    lower_band = float(
+        current["vwap_lower"]
     )
 
-    current_is_hammer = is_hammer(current)
-    current_is_shooting_star = is_shooting_star(current)
-
-    details = {
-        "candle_time": str(current["datetime"]),
-        "open": current_open,
-        "high": current_high,
-        "low": current_low,
-        "close": current_close,
-        "vwap": current_vwap,
-        "vwap_upper": current_upper,
-        "vwap_lower": current_lower,
-        "vwap_std": current_vwap_std,
-        "stoch_rsi": current_stoch,
-        "previous_stoch_rsi": previous_stoch,
-        "atr": current_atr,
-        "minimum_band_distance": minimum_band_distance,
-        "sell_distance_from_band": sell_distance,
-        "buy_distance_from_band": buy_distance,
-        "is_hammer": current_is_hammer,
-        "is_shooting_star": current_is_shooting_star,
-    }
-
-    # ========================================================
-    # SELL DI RITRACCIAMENTO
-    # ========================================================
-    #
-    # La candela deve essere:
-    # - completamente sopra la banda superiore;
-    # - distante dalla banda almeno 0.25 ATR;
-    # - Stoch RSI in zona di ipercomprato;
-    # - Stoch RSI in diminuzione;
-    # - una shooting star.
-    #
-
-    retracement_sell = (
-        current_low
-        > current_upper + minimum_band_distance
-        and current_stoch >= STOCH_OVERBOUGHT
-        and current_stoch < previous_stoch
-        and current_is_shooting_star
+    upper_band = float(
+        current["vwap_upper"]
     )
 
-    if retracement_sell:
-        return "SELL", "RETRACEMENT", details
+    candle_high = float(
+        current["high"]
+    )
 
-    # ========================================================
-    # BUY DI RITRACCIAMENTO
-    # ========================================================
-    #
-    # La candela deve essere:
-    # - completamente sotto la banda inferiore;
-    # - distante dalla banda almeno 0.25 ATR;
-    # - Stoch RSI in zona di ipervenduto;
-    # - Stoch RSI in aumento;
-    # - una hammer.
-    #
+    candle_low = float(
+        current["low"]
+    )
 
-    retracement_buy = (
-        current_high
-        < current_lower - minimum_band_distance
-        and current_stoch <= STOCH_OVERSOLD
+    distance_below_lower_band = (
+        lower_band - candle_high
+    )
+
+    distance_above_upper_band = (
+        candle_low - upper_band
+    )
+
+    minimum_distance = (
+        MIN_BAND_DISTANCE_ATR * atr
+    )
+
+    is_completely_below_lower_band = (
+        candle_high < lower_band
+    )
+
+    is_completely_above_upper_band = (
+        candle_low > upper_band
+    )
+
+    is_buy_stoch_reversal = (
+        previous_stoch <= STOCH_OVERSOLD
         and current_stoch > previous_stoch
-        and current_is_hammer
     )
 
-    if retracement_buy:
-        return "BUY", "RETRACEMENT", details
+    is_sell_stoch_reversal = (
+        previous_stoch >= STOCH_OVERBOUGHT
+        and current_stoch < previous_stoch
+    )
 
-    return None, None, details
+    is_hammer = candle_is_hammer(
+        current
+    )
+
+    is_shooting_star = candle_is_shooting_star(
+        current
+    )
+
+    candle_time = current["datetime"]
+
+    if (
+        is_completely_below_lower_band
+        and distance_below_lower_band >= minimum_distance
+        and is_buy_stoch_reversal
+        and is_hammer
+    ):
+        return {
+            "side": "BUY",
+            "symbol": display_name,
+            "datetime": candle_time,
+            "price": float(current["close"]),
+            "vwap": float(current["vwap"]),
+            "band": lower_band,
+            "atr": atr,
+            "stoch_previous": previous_stoch,
+            "stoch_current": current_stoch,
+            "distance": distance_below_lower_band,
+            "minimum_distance": minimum_distance,
+            "pattern": "HAMMER",
+            "reason": (
+                "Candela completamente sotto la banda VWAP "
+                "con distanza minima ATR e inversione "
+                "rialzista dello Stoch RSI"
+            ),
+        }
+
+    if (
+        is_completely_above_upper_band
+        and distance_above_upper_band >= minimum_distance
+        and is_sell_stoch_reversal
+        and is_shooting_star
+    ):
+        return {
+            "side": "SELL",
+            "symbol": display_name,
+            "datetime": candle_time,
+            "price": float(current["close"]),
+            "vwap": float(current["vwap"]),
+            "band": upper_band,
+            "atr": atr,
+            "stoch_previous": previous_stoch,
+            "stoch_current": current_stoch,
+            "distance": distance_above_upper_band,
+            "minimum_distance": minimum_distance,
+            "pattern": "SHOOTING STAR",
+            "reason": (
+                "Candela completamente sopra la banda VWAP "
+                "con distanza minima ATR e inversione "
+                "ribassista dello Stoch RSI"
+            ),
+        }
+
+    return None
 
 
 # ============================================================
-# MESSAGGI
+# FORMATTAZIONE SEGNALI
 # ============================================================
 
-def format_signal_message(
-    display_name,
-    signal,
-    strategy,
-    details,
-):
-    if signal == "BUY":
-        emoji = "🟢"
-    else:
-        emoji = "🔴"
+def format_signal_message(signal):
+    """
+    Crea il messaggio Telegram per un segnale.
+    """
 
-    strategy_label = "RITRACCIAMENTO VWAP"
+    candle_datetime = signal["datetime"]
 
-    if details["is_hammer"]:
-        candle_pattern = "Hammer"
-
-    elif details["is_shooting_star"]:
-        candle_pattern = "Shooting Star"
+    if hasattr(candle_datetime, "strftime"):
+        candle_datetime_text = candle_datetime.strftime(
+            "%Y-%m-%d %H:%M"
+        )
 
     else:
-        candle_pattern = "Nessuno"
+        candle_datetime_text = str(
+            candle_datetime
+        )
 
     return (
-        f"{emoji} SEGNALE {signal} - {strategy_label}\n\n"
-        f"Titolo: {display_name}\n"
+        f"🚨 SEGNALE {signal['side']}\n\n"
+        f"Titolo: {signal['symbol']}\n"
         f"Timeframe: {INTERVAL}\n"
-        f"Candela: {details['candle_time']}\n"
-        f"Pattern: {candle_pattern}\n\n"
-        f"Prezzo: {details['close']:.4f}\n"
-        f"VWAP: {details['vwap']:.4f}\n"
-        f"Banda superiore: "
-        f"{details['vwap_upper']:.4f}\n"
-        f"Banda inferiore: "
-        f"{details['vwap_lower']:.4f}\n"
-        f"ATR: {details['atr']:.4f}\n"
-        f"Distanza minima richiesta: "
-        f"{details['minimum_band_distance']:.4f}\n"
-        f"Stoch RSI: "
-        f"{details['stoch_rsi']:.2f}\n"
+        f"Candela: {candle_datetime_text}\n"
+        f"Prezzo chiusura: {signal['price']:.4f}\n"
+        f"VWAP: {signal['vwap']:.4f}\n"
+        f"Banda VWAP: {signal['band']:.4f}\n"
+        f"ATR: {signal['atr']:.4f}\n"
+        f"Distanza banda: {signal['distance']:.4f}\n"
+        f"Distanza minima: {signal['minimum_distance']:.4f}\n"
         f"Stoch RSI precedente: "
-        f"{details['previous_stoch_rsi']:.2f}\n\n"
-        "⚠️ Segnale informativo. "
-        "Verificare sempre grafico, liquidità, spread "
-        "e contesto prima di qualsiasi decisione."
+        f"{signal['stoch_previous']:.2f}\n"
+        f"Stoch RSI attuale: "
+        f"{signal['stoch_current']:.2f}\n"
+        f"Pattern: {signal['pattern']}\n\n"
+        f"Motivazione:\n{signal['reason']}"
+    )
+
+
+def signal_already_sent(signal):
+    """
+    Evita di inviare più volte lo stesso segnale
+    sulla stessa candela.
+    """
+
+    symbol = signal["symbol"]
+    side = signal["side"]
+    candle_datetime = str(
+        signal["datetime"]
+    )
+
+    signal_key = (
+        symbol,
+        side,
+        candle_datetime,
+    )
+
+    with state_lock:
+        if signal_key in last_signal_by_symbol:
+            return True
+
+        last_signal_by_symbol[signal_key] = True
+
+    return False
+
+
+def process_signal(signal):
+    """
+    Gestisce un segnale valido.
+    """
+
+    if signal is None:
+        return
+
+    if signal_already_sent(signal):
+        log(
+            f"[SIGNAL] Segnale già inviato: "
+            f"{signal['symbol']} {signal['side']}"
+        )
+        return
+
+    message = format_signal_message(
+        signal
+    )
+
+    log(
+        f"[SIGNAL] {signal['side']} "
+        f"{signal['symbol']} "
+        f"price={signal['price']:.4f} "
+        f"pattern={signal['pattern']}"
+    )
+
+    if DRY_RUN:
+        log(
+            "[DRY_RUN] Messaggio Telegram non inviato."
+        )
+        return
+
+    send_telegram(message)
+
+
+# ============================================================
+# GRUPPI
+# ============================================================
+
+def build_symbol_groups(symbol_names):
+    """
+    Divide i titoli in gruppi.
+    """
+
+    return [
+        symbol_names[index:index + MAX_SYMBOLS_PER_GROUP]
+        for index in range(
+            0,
+            len(symbol_names),
+            MAX_SYMBOLS_PER_GROUP,
+        )
+    ]
+
+
+def scan_symbol(display_name):
+    """
+    Scarica, analizza e processa un titolo.
+    """
+
+    config = SYMBOLS.get(display_name)
+
+    if config is None:
+        log(
+            f"[SCAN] Configurazione mancante per "
+            f"{display_name}"
+        )
+        return
+
+    log(
+        f"[SCAN] Analisi {display_name} "
+        f"({config['exchange']})"
+    )
+
+    try:
+        df = get_time_series(
+            display_name,
+            config,
+        )
+
+        if df is None:
+            return
+
+        signal = evaluate_signal(
+            display_name,
+            df,
+        )
+
+        if signal is None:
+            log(
+                f"[SCAN] Nessun segnale per "
+                f"{display_name}"
+            )
+            return
+
+        process_signal(signal)
+
+    except TwelveDataRateLimitError:
+        log(
+            "[SCAN] Limite API raggiunto. "
+            "Interruzione della scansione corrente."
+        )
+        raise
+
+    except Exception as exc:
+        log(
+            f"[SCAN] Errore analizzando "
+            f"{display_name}: {repr(exc)}"
+        )
+
+
+def scan_group(group_number, groups):
+    """
+    Analizza tutti i titoli appartenenti a un gruppo.
+    """
+
+    if group_number >= len(groups):
+        return
+
+    group = groups[group_number]
+
+    log(
+        f"[GROUP] Avvio gruppo "
+        f"{group_number + 1}/{len(groups)}: "
+        f"{', '.join(group)}"
+    )
+
+    for index, display_name in enumerate(group):
+        scan_symbol(display_name)
+
+        if index < len(group) - 1:
+            time.sleep(
+                REQUEST_DELAY_SECONDS
+            )
+
+    log(
+        f"[GROUP] Fine gruppo "
+        f"{group_number + 1}/{len(groups)}"
     )
 
 
 # ============================================================
-# SCANSIONE DI UN GRUPPO
-# ============================================================
-
-last_signal_key = {}
-
-
-def scan_group(
-    group_number,
-    group_symbols,
-    session_name,
-    total_groups,
-):
-    log("=" * 70)
-
-    log(
-        f"[GROUP] Avvio gruppo {group_number + 1}/"
-        f"{total_groups} | sessione={session_name}"
-    )
-
-    log(
-        f"[GROUP] Titoli: {', '.join(group_symbols)}"
-    )
-
-    valid_data_count = 0
-    signal_count = 0
-
-    for position, display_name in enumerate(group_symbols):
-        # Controlla che la sessione non sia cambiata durante il gruppo.
-        current_session, _, _ = get_current_session()
-
-        if current_session != session_name:
-            log(
-                "[SCHEDULE] Cambio sessione rilevato. "
-                "Interrompo il gruppo attuale."
-            )
-            break
-
-        config = SYMBOLS[display_name]
-
-        try:
-            df = get_time_series(
-                display_name,
-                config,
-            )
-
-            if df is None:
-                continue
-
-            valid_data_count += 1
-
-            df = calculate_indicators(df)
-
-            signal, strategy, details = evaluate_signal(df)
-
-            if details is None:
-                log(
-                    f"[CHECK] {display_name}: "
-                    "indicatori non disponibili"
-                )
-                continue
-
-            log(
-                f"[CHECK] {display_name} | "
-                f"close={details['close']:.4f} | "
-                f"VWAP={details['vwap']:.4f} | "
-                f"upper={details['vwap_upper']:.4f} | "
-                f"lower={details['vwap_lower']:.4f} | "
-                f"ATR={details['atr']:.4f} | "
-                f"StochRSI={details['stoch_rsi']:.2f} | "
-                f"pattern_hammer={details['is_hammer']} | "
-                f"pattern_shooting_star="
-                f"{details['is_shooting_star']} | "
-                f"signal={signal or 'NESSUNO'} | "
-                f"strategy={strategy or '-'}"
-            )
-
-            if signal is None:
-                continue
-
-            signal_count += 1
-
-            signal_key = (
-                f"{display_name}|"
-                f"{strategy}|"
-                f"{signal}|"
-                f"{details['candle_time']}"
-            )
-
-            if last_signal_key.get(display_name) == signal_key:
-                log(
-                    f"[SIGNAL] {display_name}: "
-                    "segnale già gestito per questa candela"
-                )
-                continue
-
-            message = format_signal_message(
-                display_name,
-                signal,
-                strategy,
-                details,
-            )
-
-            if DRY_RUN:
-                log(
-                    f"[DRY RUN] Segnale non inviato:\n"
-                    f"{message}"
-                )
-
-                last_signal_key[display_name] = signal_key
-                continue
-
-            log(
-                f"[TELEGRAM] Invio segnale {signal} "
-                f"{strategy} per {display_name}"
-            )
-
-            sent = send_telegram(message)
-
-            if sent:
-                last_signal_key[display_name] = signal_key
-
-                log(
-                    f"[TELEGRAM] Segnale inviato per "
-                    f"{display_name}"
-                )
-            else:
-                log(
-                    f"[TELEGRAM] Invio fallito per "
-                    f"{display_name}"
-                )
-
-        except TwelveDataRateLimitError:
-            log(
-                "[RATE LIMIT] Limite Twelve Data raggiunto. "
-                "Interrompo il gruppo attuale."
-            )
-            break
-
-        except Exception as exc:
-            log(
-                f"[GROUP] Errore non gestito su "
-                f"{display_name}: {repr(exc)}"
-            )
-
-        finally:
-            if position < len(group_symbols) - 1:
-                time.sleep(REQUEST_DELAY_SECONDS)
-
-    log(
-        f"[GROUP] Fine gruppo {group_number + 1} | "
-        f"dati validi={valid_data_count} | "
-        f"segnali trovati={signal_count}"
-    )
-
-    log("=" * 70)
-
-
-# ============================================================
-# CICLO ROTANTE
+# LOOP PRINCIPALE
 # ============================================================
 
 def scanner_loop():
-    log("[BOT] Thread scanner avviato")
+    """
+    Loop principale del bot.
 
+    Analizza i 30 titoli americani divisi in gruppi.
+    """
+
+    log("[BOT] Scanner avviato.")
     log(
-        f"[BOT] Titoli totali configurati: {len(SYMBOLS)}"
+        f"[BOT] Titoli totali: {len(SYMBOLS)}"
+    )
+    log(
+        f"[BOT] Titoli per gruppo: "
+        f"{MAX_SYMBOLS_PER_GROUP}"
+    )
+    log(
+        f"[BOT] Numero gruppi: "
+        f"{len(build_symbol_groups(list(SYMBOLS.keys())))}"
+    )
+    log(
+        f"[BOT] Timeframe: {INTERVAL}"
+    )
+    log(
+        f"[BOT] Modalità DRY_RUN: {DRY_RUN}"
     )
 
-    log(
-        f"[BOT] Titoli europei: "
-        f"{len(get_symbol_names_for_market('EUROPE'))}"
-    )
-
-    log(
-        f"[BOT] Titoli americani: "
-        f"{len(get_symbol_names_for_market('USA'))}"
-    )
-
-    log(
-        f"[BOT] Ogni gruppo contiene al massimo "
-        f"{MAX_SYMBOLS_PER_GROUP} titoli"
-    )
-
-    log(
-        f"[BOT] Intervallo tra gruppi: "
-        f"{GROUP_INTERVAL_SECONDS} secondi"
-    )
-
-    log(
-        f"[BOT] Pausa tra richieste: "
-        f"{REQUEST_DELAY_SECONDS} secondi"
-    )
-
-    log(
-        f"[BOT] Strategia: "
-        "VWAP + Stoch RSI + Hammer/Shooting Star"
-    )
-
-    group_index = 0
-    previous_session = None
+    send_startup_test()
 
     while True:
-        now = get_local_now()
-
-        session_name, active_symbols, session_end = (
-            get_current_session(now)
-        )
-
-        if session_name is None or not active_symbols:
-            group_index = 0
-            previous_session = None
-            sleep_until_next_session()
-            continue
-
-        if session_name != previous_session:
-            group_index = 0
-            previous_session = session_name
-
-            log(
-                f"[SCHEDULE] Inizio sessione {session_name}. "
-                f"Titoli attivi: {len(active_symbols)}"
-            )
-
-        active_groups = build_symbol_groups(active_symbols)
-
-        if not active_groups:
-            log(
-                "[BOT] Nessun gruppo attivo disponibile. "
-                "Attendo 60 secondi."
-            )
-            time.sleep(60)
-            continue
-
-        if group_index >= len(active_groups):
-            group_index = 0
-
-        current_group = active_groups[group_index]
-        cycle_start = time.monotonic()
-
         try:
-            scan_group(
-                group_number=group_index,
-                group_symbols=current_group,
-                session_name=session_name,
-                total_groups=len(active_groups),
+            now = get_local_now()
+
+            session_name, active_symbols, session_end = (
+                get_current_session(now)
             )
+
+            if session_name is None:
+                sleep_until_next_session()
+                continue
+
+            groups = build_symbol_groups(
+                active_symbols
+            )
+
+            log(
+                f"[SESSION] Sessione attiva: "
+                f"{session_name}"
+            )
+
+            log(
+                f"[SESSION] Titoli attivi: "
+                f"{len(active_symbols)}"
+            )
+
+            log(
+                f"[SESSION] Gruppi attivi: "
+                f"{len(groups)}"
+            )
+
+            for group_number in range(
+                len(groups)
+            ):
+                now = get_local_now()
+
+                current_session, _, _ = (
+                    get_current_session(now)
+                )
+
+                if current_session is None:
+                    log(
+                        "[SESSION] Sessione terminata "
+                        "durante la scansione."
+                    )
+                    break
+
+                scan_started_at = time.time()
+
+                try:
+                    scan_group(
+                        group_number,
+                        groups,
+                    )
+
+                except TwelveDataRateLimitError:
+                    log(
+                        "[BOT] Limite API rilevato. "
+                        "Pausa di 5 minuti."
+                    )
+                    time.sleep(300)
+                    break
+
+                elapsed_seconds = (
+                    time.time()
+                    - scan_started_at
+                )
+
+                remaining_seconds = max(
+                    0,
+                    GROUP_INTERVAL_SECONDS
+                    - elapsed_seconds,
+                )
+
+                if group_number < len(groups) - 1:
+                    log(
+                        f"[GROUP] Pausa di "
+                        f"{remaining_seconds:.0f} secondi "
+                        "prima del gruppo successivo."
+                    )
+
+                    time.sleep(
+                        remaining_seconds
+                    )
+
+            else:
+                log(
+                    "[SESSION] Ciclo completo terminato. "
+                    "Ripartenza dal primo gruppo."
+                )
+
+                time.sleep(5)
 
         except Exception as exc:
             log(
-                f"[BOT] Errore grave nel gruppo "
-                f"{group_index + 1}: {repr(exc)}"
+                f"[BOT] Errore nel loop principale: "
+                f"{repr(exc)}"
             )
 
-        group_index = (
-            group_index + 1
-        ) % len(active_groups)
-
-        elapsed = time.monotonic() - cycle_start
-
-        now_after_scan = get_local_now()
-
-        (
-            current_session_after_scan,
-            _,
-            session_end_after_scan,
-        ) = get_current_session(now_after_scan)
-
-        if (
-            current_session_after_scan != session_name
-            or session_end_after_scan is None
-        ):
-            log(
-                "[SCHEDULE] Sessione terminata. "
-                "Ricalcolo la prossima sessione."
-            )
-            continue
-
-        seconds_until_session_end = max(
-            1,
-            (
-                session_end_after_scan
-                - now_after_scan
-            ).total_seconds(),
-        )
-
-        wait_seconds = min(
-            max(1, GROUP_INTERVAL_SECONDS - elapsed),
-            seconds_until_session_end,
-        )
-
-        log(
-            f"[BOT] Prossimo gruppo tra "
-            f"{wait_seconds:.0f} secondi"
-        )
-
-        time.sleep(wait_seconds)
+            time.sleep(60)
 
 
 # ============================================================
-# AVVIO
+# AVVIO FLASK
 # ============================================================
 
-def start_background_bot():
-    scanner_thread = threading.Thread(
-        target=scanner_loop,
-        name="scanner-thread",
-        daemon=True,
+def start_flask_server():
+    """
+    Avvia il server Flask in un thread separato.
+    """
+
+    log(
+        f"[WEB] Avvio server Flask sulla porta {PORT}"
     )
 
-    scanner_thread.start()
-
-
-if __name__ == "__main__":
-    log("[BOT] Avvio applicazione")
-
-    # Controllo Telegram indipendente dall'API di mercato.
-    send_startup_test()
-
-    # Avvio del ciclo rotante in background.
-    start_background_bot()
-
-    # Render mantiene attivo il Web Service tramite Flask.
     app.run(
         host="0.0.0.0",
         port=PORT,
         threaded=True,
+        use_reloader=False,
     )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+    flask_thread = threading.Thread(
+        target=start_flask_server,
+        daemon=True,
+    )
+
+    flask_thread.start()
+
+    scanner_loop()
